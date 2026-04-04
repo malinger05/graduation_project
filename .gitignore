@@ -1,0 +1,23 @@
+# Secrets — never commit
+.env
+
+# Virtual environment
+atm_venv/
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
