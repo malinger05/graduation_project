@@ -52,7 +52,7 @@ class BlockchainLogger:
         
         if not self.w3.is_connected():
             raise Exception("Failed to connect to Sepolia")
-        print("✓ Connected to Sepolia")
+        print(" Connected to Sepolia")
         
         self.contract = self.w3.eth.contract(
             address=Web3.to_checksum_address(CONTRACT_ADDRESS),
