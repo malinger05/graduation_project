@@ -1,4 +1,9 @@
-# Subject: GP-<n>: short summary (keep under ~72 characters)
-# Examples: GP-3: Add env-based wallet config
+# Jira tasks (pick the key that matches this commit):
+# GP-1 — Create MetaMask wallet
+# GP-2 — Write and deploy smart contract to Sepolia
+# GP-3 — Build simple ATM with blockchain logging integration
 #
-# Body (optional — blank line after subject, then details):
+# Subject line (replace GP-n and edit summary):
+# GP-1: <what you changed>
+#
+# Body (optional):
