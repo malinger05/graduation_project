@@ -58,5 +58,54 @@
     "status": "SUCCESS",
     "blockchain_tx": "d5a8f977461d18f95b480bed2bf563af752f9f5750ded9010794b1e49c9435d0",
     "blockchain_hash": "996fbd9822b66d3d435973a03cb104ba6374a88f8b023fac1baa37be8bbb2a45"
+  },
+  {
+    "type": "WITHDRAW",
+    "account": "1001",
+    "name": "John Doe",
+    "amount": 1.0,
+    "old_balance": 200.0,
+    "new_balance": 199.0,
+    "timestamp": "2026-04-05T00:56:35.585850",
+    "status": "SUCCESS",
+    "blockchain_tx": "9914183ba539ce768cdd48a7e005281ec10383ee13220583f0438ff30c375f07",
+    "blockchain_hash": "379e20e7c3ebe85e3c8056824796efef1193283aaf6315ac6fb142b7e2829b11"
+  },
+  {
+    "type": "WITHDRAW",
+    "account": "1001",
+    "name": "John Doe",
+    "amount": 1.0,
+    "old_balance": 199.0,
+    "new_balance": 198.0,
+    "timestamp": "2026-04-05T01:01:33.038611",
+    "status": "SUCCESS",
+    "blockchain_tx": "6be11c832d16394e69aacc611066a156ba85af3b88345173333e9fbe52335b0c",
+    "blockchain_hash": "b47585449c3eb1862ebb9d8de0d5f2a3ee5641839cbd696830b1b3a4a7eb5e02"
+  },
+  {
+    "type": "WITHDRAW",
+    "account": "1001",
+    "name": "John Doe",
+    "amount": 1.0,
+    "old_balance": 198.0,
+    "new_balance": 197.0,
+    "timestamp": "2026-04-05T01:11:31.536253",
+    "status": "SUCCESS",
+    "blockchain_tx": "4075b43d77a353c81ab8999b511db77cb7bb74f4c474d3d38c533fbe729b4aec",
+    "blockchain_hash": "81f7196c782c3d8cd49567cd28371da9ee4a39ff256f33ee51d0899b5c78de6b"
+  },
+  {
+    "type": "WITHDRAW",
+    "account": "1001",
+    "name": "John Doe",
+    "amount": 1.0,
+    "old_balance": 197.0,
+    "new_balance": 196.0,
+    "timestamp": "2026-04-05T01:12:23.429547",
+    "status": "SUCCESS",
+    "blockchain_tx": "62aebe2bc824400a7020c14f69333400f1722a52a39454abdf8991ffed1bfb3f",
+    "blockchain_hash": "774edc21d03177eb131be83ff55e48fb5f1cfa6ed0163da95336df6aeb681e68",
+    "ipfs_cid": "QmQLH2cgbK4fy5xpzGmeNBaZCYB2ePJQG7iJjhfpF8V3LM"
   }
 ]

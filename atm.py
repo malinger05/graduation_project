@@ -5,16 +5,22 @@ import time
 from datetime import datetime
 from web3 import Web3
 from dotenv import load_dotenv
-
+import requests
+import base64
+from cryptography.fernet import Fernet
+from pinatapy import PinataPy
 load_dotenv()
 
 # ============================================
 # CONFIGURATION (use .env — see .env.example)
 # ============================================
 
+PINATA_API_KEY = os.environ.get("PINATA_API_KEY", "").strip()
+PINATA_API_SECRET = os.environ.get("PINATA_API_SECRET", "").strip()
 CONTRACT_ADDRESS = os.environ.get("CONTRACT_ADDRESS", "").strip()
 ETH_PRIVATE_KEY = os.environ.get("ETH_PRIVATE_KEY", "").strip()
-
+#Python (Fernet) → Creates key → Encrypts log → Sends to IPFS
+ENCRYPTION_KEY_FILE = "encryption_key.key"
 # ============================================
 # SMART CONTRACT ABI (simplified)
 # ============================================
@@ -35,7 +41,79 @@ CONTRACT_ABI = [
         "type": "function"
     }
 ]
+# ============================================
+# IPFS STORAGE CLASS
+# ============================================
 
+class IPFSStorage:
+    def __init__(self):
+        # Connect to Pinata
+        self.pinata = PinataPy(PINATA_API_KEY, PINATA_API_SECRET)
+        self.encryption_key = self.get_or_create_encryption_key()
+        self.cipher = Fernet(self.encryption_key)
+        print("✓ IPFS storage ready")
+    
+    def get_or_create_encryption_key(self):
+        """Load existing encryption key or create a new one"""
+        if os.path.exists(ENCRYPTION_KEY_FILE):
+            with open(ENCRYPTION_KEY_FILE, 'rb') as f:
+                return f.read()
+        else:
+            # Create new key and save it
+            key = Fernet.generate_key()
+            with open(ENCRYPTION_KEY_FILE, 'wb') as f:
+                f.write(key)
+            print(f"✓ Created new encryption key: {ENCRYPTION_KEY_FILE}")
+            print("⚠️  KEEP THIS FILE SAFE! Needed to decrypt logs.")
+            return key
+    
+    def encrypt_log(self, log_data):
+        """Encrypt transaction log before uploading"""
+        # Convert dict to string
+        log_string = json.dumps(log_data)
+        # Encrypt
+        encrypted = self.cipher.encrypt(log_string.encode())
+        # Convert to base64 for easy storage
+        return base64.b64encode(encrypted).decode()
+    
+    def upload_to_ipfs(self, encrypted_log):
+        """Upload encrypted log to IPFS via Pinata"""
+        try:
+            # Create a JSON object with the encrypted log
+            data = {
+                "encrypted_log": encrypted_log,
+                "timestamp": datetime.now().isoformat(),
+                "version": "1.0"
+            }
+            
+            # Upload to IPFS
+            result = self.pinata.pin_json_to_ipfs(data)
+            ipfs_hash = result['IpfsHash']
+            
+            print(f"  📦 IPFS CID: {ipfs_hash}...")
+            return ipfs_hash
+            
+        except Exception as e:
+            print(f"  ❌ IPFS upload error: {e}")
+            return None
+    
+    def retrieve_from_ipfs(self, ipfs_hash):
+        """Retrieve and decrypt log from IPFS"""
+        try:
+            # Fetch from IPFS gateway
+            url = f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}"
+            response = requests.get(url)
+            data = response.json()
+            
+            # Decrypt
+            encrypted = base64.b64decode(data['encrypted_log'])
+            decrypted = self.cipher.decrypt(encrypted)
+            
+            return json.loads(decrypted.decode())
+            
+        except Exception as e:
+            print(f"❌ IPFS retrieval error: {e}")
+            return None
 # ============================================
 # BLOCKCHAIN LOGGER CLASS
 # ============================================
@@ -68,34 +146,51 @@ class BlockchainLogger:
         return hashlib.sha256(data_string.encode()).hexdigest()
     
   
-    def store_transaction_log(self, transaction_details):
-        """Store transaction log on blockchain"""
+    def store_transaction_log(self, transaction_details, ipfs_storage=None):
+        """Store transaction log on blockchain + IPFS"""
+        
+        # Step 1: Create log hash (for blockchain)
         log_hash = self.create_log_hash(transaction_details)
         
+        # Step 2: Upload to IPFS (if available)
+        ipfs_cid = None
+        if ipfs_storage:
+            # Encrypt and upload to IPFS
+            encrypted_log = ipfs_storage.encrypt_log(transaction_details)
+            ipfs_cid = ipfs_storage.upload_to_ipfs(encrypted_log)
+        
+        # Step 3: Store hash on blockchain
         try:
-            # Build transaction
-            store_txn = self.contract.functions.storeLog(log_hash).build_transaction({
+            # Combine blockchain hash with IPFS CID for extra verification
+            blockchain_data = log_hash
+            if ipfs_cid:
+                blockchain_data = f"{log_hash}:IPFS:{ipfs_cid}"
+            
+            store_txn = self.contract.functions.storeLog(blockchain_data).build_transaction({
                 'from': self.account.address,
                 'nonce': self.w3.eth.get_transaction_count(self.account.address),
                 'gas': 200000,
                 'gasPrice': self.w3.eth.gas_price
             })
             
-            # Sign the transaction
             signed_txn = self.account.sign_transaction(store_txn)
             
-            # Send the transaction - FIX for web3 v6+
             if hasattr(signed_txn, 'raw_transaction'):
                 tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
             else:
                 tx_hash = self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)
             
-            print(f"  📝 Blockchain record: {tx_hash.hex()[:20]}...")
-            return {'success': True, 'tx_hash': tx_hash.hex(), 'log_hash': log_hash}
+            print(f"  📝 Blockchain: {tx_hash.hex()[:20]}...")
+            return {
+                'success': True, 
+                'tx_hash': tx_hash.hex(), 
+                'log_hash': log_hash,
+                'ipfs_cid': ipfs_cid
+            }
             
         except Exception as e:
             print(f"  ❌ Blockchain error: {e}")
-            return {'success': False, 'log_hash': log_hash}
+            return {'success': False, 'log_hash': log_hash, 'ipfs_cid': ipfs_cid}
 # ============================================
 # ATM SYSTEM (with database for balances)
 # ============================================
@@ -109,6 +204,7 @@ class ATMWithBlockchain:
         self.accounts = {}
         self.current_account = None
         self.load_accounts()
+        self.ipfs = IPFSStorage()
         self.load_transactions()
     
     def load_accounts(self):
@@ -181,10 +277,11 @@ class ATMWithBlockchain:
         
         # Store on blockchain
         print(f"\n  Recording withdrawal on blockchain...")
-        blockchain_result = self.blockchain.store_transaction_log(json.dumps(log_entry))
+        blockchain_result = self.blockchain.store_transaction_log(json.dumps(log_entry), self.ipfs)
         
         log_entry["blockchain_tx"] = blockchain_result.get("tx_hash", "FAILED")
         log_entry["blockchain_hash"] = blockchain_result.get("log_hash", "")
+        log_entry["ipfs_cid"] = blockchain_result.get("ipfs_cid", "")
         self.save_transaction(log_entry)
         
         return True, f"Withdrew ${amount}. New balance: ${account['balance']}", blockchain_result['success']
@@ -214,10 +311,11 @@ class ATMWithBlockchain:
         
         # Store on blockchain
         print(f"\n  Recording deposit on blockchain...")
-        blockchain_result = self.blockchain.store_transaction_log(json.dumps(log_entry))
+        blockchain_result = self.blockchain.store_transaction_log(json.dumps(log_entry), self.ipfs)
         
         log_entry["blockchain_tx"] = blockchain_result.get("tx_hash", "FAILED")
         log_entry["blockchain_hash"] = blockchain_result.get("log_hash", "")
+        log_entry["ipfs_cid"] = blockchain_result.get("ipfs_cid", "")
         self.save_transaction(log_entry)
         
         return True, f"Deposited ${amount}. New balance: ${account['balance']}", blockchain_result['success']
