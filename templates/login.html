@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Sign in — ATM{% endblock %}
+{% block body %}
+<section class="card">
+  <h1>Welcome</h1>
+  <p class="muted">Enter your account number and PIN.</p>
+  <form method="post" action="{{ url_for('login') }}" class="stack">
+    <label>
+      Account number
+      <input type="text" name="account" inputmode="numeric" autocomplete="username" required>
+    </label>
+    <label>
+      PIN
+      <input type="password" name="pin" inputmode="numeric" autocomplete="current-password" required>
+    </label>
+    <button type="submit" class="btn primary">Sign in</button>
+  </form>
+</section>
+{% endblock %}
