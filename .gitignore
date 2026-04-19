@@ -137,6 +137,11 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+
+# Local crypto / DB secrets (this project)
+encryption_key.key
+user_db_aes256.key
+secure_users.db
 .venv
 env/
 venv/

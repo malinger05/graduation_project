@@ -11,6 +11,7 @@ import requests
 import base64
 from cryptography.fernet import Fernet
 from pinatapy import PinataPy
+from secure_user_db import SecureUserDatabase
 load_dotenv()
 
 # ============================================
@@ -21,7 +22,8 @@ PINATA_API_KEY = os.environ.get("PINATA_API_KEY", "").strip()
 PINATA_API_SECRET = os.environ.get("PINATA_API_SECRET", "").strip()
 CONTRACT_ADDRESS = os.environ.get("CONTRACT_ADDRESS", "").strip()
 ETH_PRIVATE_KEY = os.environ.get("ETH_PRIVATE_KEY", "").strip()
-print(f"DEBUG: atm.py using contract address: {CONTRACT_ADDRESS}")
+if CONTRACT_ADDRESS:
+    print(f"DEBUG: atm.py using contract address: {CONTRACT_ADDRESS}")
 #Python (Fernet) → Creates key → Encrypts log → Sends to IPFS
 ENCRYPTION_KEY_FILE = "encryption_key.key"
 # ============================================
@@ -124,6 +126,8 @@ class IPFSStorage:
         except Exception as e:
             print(f"❌ IPFS retrieval error: {e}")
             return None
+
+
 # ============================================
 # BLOCKCHAIN LOGGER CLASS
 # ============================================
@@ -208,41 +212,22 @@ class BlockchainLogger:
         except Exception as e:
             print(f"  ❌ Blockchain error: {e}")
             return {'success': False, 'log_hash': log_hash, 'ipfs_cid': ipfs_cid}
+
+
 # ============================================
 # ATM SYSTEM (with database for balances)
 # ============================================
 
-ACCOUNTS_FILE = "accounts.json"
 TRANSACTIONS_FILE = "transactions.json"
 
 class ATMWithBlockchain:
     def __init__(self, blockchain_logger):
         self.blockchain = blockchain_logger
-        self.accounts = {}
         self.current_account = None
-        self.load_accounts()
+        self.current_user = None
+        self.user_db = SecureUserDatabase()
         self.ipfs = IPFSStorage()
         self.load_transactions()
-    
-    def load_accounts(self):
-        """Load balances from database (JSON file)"""
-        if os.path.exists(ACCOUNTS_FILE):
-            with open(ACCOUNTS_FILE, 'r') as f:
-                self.accounts = json.load(f)
-            print(f"✓ Loaded {len(self.accounts)} accounts")
-        else:
-            # Demo accounts
-            self.accounts = {
-                "1001": {"name": "John Doe", "pin": "1234", "balance": 500},
-                "1002": {"name": "Jane Smith", "pin": "5678", "balance": 1000},
-                "1003": {"name": "Bob Wilson", "pin": "9012", "balance": 250}
-            }
-            self.save_accounts()
-            print("✓ Created demo accounts")
-    
-    def save_accounts(self):
-        with open(ACCOUNTS_FILE, 'w') as f:
-            json.dump(self.accounts, f, indent=2)
     
     def load_transactions(self):
         """Load local transaction history"""
@@ -258,11 +243,12 @@ class ATMWithBlockchain:
             json.dump(self.local_transactions, f, indent=2)
     
     def authenticate(self, account_number, pin):
-        if account_number in self.accounts:
-            if self.accounts[account_number]["pin"] == pin:
-                self.current_account = account_number
-                print(f"\n✓ Welcome {self.accounts[account_number]['name']}!")
-                return True
+        user = self.user_db.verify_credentials(account_number, pin)
+        if user:
+            self.current_account = account_number
+            self.current_user = user
+            print(f"\n✓ Welcome {user['full_name']}!")
+            return True
         print("\n❌ Invalid credentials")
         return False
     def verify_integrity(self, transaction):
@@ -277,32 +263,36 @@ class ATMWithBlockchain:
         
         exists = self.blockchain.verify_transaction(stored_hash)
         print(f"DEBUG: verify_transaction returned: {exists}")  # ← ADD THIS
-        
         if exists:
             return True, "✅ AUTHENTIC - Hash verified on blockchain"
         else:
             return False, "❌ Transaction is TAMPERED - Hash not found on blockchain"
     def withdraw(self, amount):
-        account = self.accounts[self.current_account]
+        account = self.user_db.get_user_by_account(self.current_account)
+        if not account:
+            return False, "Account not found", False
         
         if amount <= 0:
-            return False, "Amount must be positive"
+            return False, "Amount must be positive", False
         
         if amount > account["balance"]:
-            return False, f"Insufficient funds. Balance: ${account['balance']}"
+            return False, f"Insufficient funds. Balance: ${account['balance']}", False
         
         # Update balance in database
         old_balance = account["balance"]
-        account["balance"] -= amount
-        self.save_accounts()
+        new_balance = old_balance - amount
+        self.user_db.update_balance(self.current_account, new_balance)
+        if self.current_user:
+            self.current_user["balance"] = new_balance
         # Create log entry
         log_entry = {
             "type": "WITHDRAW",
             "account": self.current_account,
-            "name": account["name"],
+            "name": account["full_name"],
+            "user_id": account["user_id"],
             "amount": amount,
             "old_balance": old_balance,
-            "new_balance": account["balance"],
+            "new_balance": new_balance,
             "timestamp": datetime.now().isoformat(),
             "status": "SUCCESS"
         }
@@ -319,27 +309,32 @@ class ATMWithBlockchain:
         if blockchain_result['success']:
             print("\n  📱 Generating QR receipt...")
             self.generate_qr_receipt(log_entry)
-        return True, f"Withdrew ${amount}. New balance: ${account['balance']}", blockchain_result['success']
+        return True, f"Withdrew ${amount}. New balance: ${new_balance}", blockchain_result['success']
     
     def deposit(self, amount):
-        account = self.accounts[self.current_account]
+        account = self.user_db.get_user_by_account(self.current_account)
+        if not account:
+            return False, "Account not found", False
         
         if amount <= 0:
-            return False, "Amount must be positive"
+            return False, "Amount must be positive", False
         
         # Update balance in database
         old_balance = account["balance"]
-        account["balance"] += amount
-        self.save_accounts()
+        new_balance = old_balance + amount
+        self.user_db.update_balance(self.current_account, new_balance)
+        if self.current_user:
+            self.current_user["balance"] = new_balance
         
         # Create log entry
         log_entry = {
             "type": "DEPOSIT",
             "account": self.current_account,
-            "name": account["name"],
+            "name": account["full_name"],
+            "user_id": account["user_id"],
             "amount": amount,
             "old_balance": old_balance,
-            "new_balance": account["balance"],
+            "new_balance": new_balance,
             "timestamp": datetime.now().isoformat(),
             "status": "SUCCESS"
         }
@@ -353,10 +348,15 @@ class ATMWithBlockchain:
         log_entry["ipfs_cid"] = blockchain_result.get("ipfs_cid", "")
         self.save_transaction(log_entry)
         
-        return True, f"Deposited ${amount}. New balance: ${account['balance']}", blockchain_result['success']
+        return True, f"Deposited ${amount}. New balance: ${new_balance}", blockchain_result['success']
     
     def check_balance(self):
-        return self.accounts[self.current_account]["balance"]
+        account = self.user_db.get_user_by_account(self.current_account)
+        if not account:
+            return 0
+        if self.current_user:
+            self.current_user["balance"] = account["balance"]
+        return account["balance"]
     
     def show_transaction_history(self):
         print("\n" + "="*60)
@@ -389,7 +389,7 @@ class ATMWithBlockchain:
         if not tx_hash or tx_hash == "FAILED":
             print("❌ Cannot generate QR: Transaction not on blockchain")
             return None
-        
+
         # Create blockchain explorer link
         blockchain_link = f"https://sepolia.etherscan.io/tx/{tx_hash}"
         
@@ -453,8 +453,8 @@ class ATMWithBlockchain:
         
         # Write to CSV
         with open(csv_filename, 'w', newline='') as csvfile:
-            fieldnames = ['type', 'account', 'name', 'amount', 'old_balance', 
-                        'new_balance', 'timestamp', 'status', 'blockchain_tx', 
+            fieldnames = ['type', 'account', 'user_id', 'name', 'amount', 'old_balance',
+                        'new_balance', 'timestamp', 'status', 'blockchain_tx',
                         'blockchain_hash', 'ipfs_cid', 'verified']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             
@@ -488,6 +488,7 @@ class ATMWithBlockchain:
         return csv_filename
     def logout(self):
         self.current_account = None
+        self.current_user = None
         print("\n✓ Logged out")
 
 # ============================================
