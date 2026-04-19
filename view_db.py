@@ -1,0 +1,103 @@
+import os
+from datetime import datetime
+
+from dotenv import load_dotenv
+
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except ImportError as exc:
+    raise SystemExit("psycopg2 is required. Run: pip install psycopg2-binary") from exc
+
+
+load_dotenv()
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/atm").strip()
+ACCOUNTS_DATABASE_URL = os.environ.get("ACCOUNTS_DATABASE_URL", DATABASE_URL).strip()
+ACCOUNTS_TABLE = os.environ.get("ACCOUNTS_TABLE", "accounts").strip()
+
+
+def format_cell(value):
+    if value is None:
+        return "-"
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def print_table(title, rows, columns):
+    print(f"\n{title}")
+    print("-" * len(title))
+    if not rows:
+        print("(no rows)")
+        return
+
+    widths = {col: len(col) for col in columns}
+    for row in rows:
+        for col in columns:
+            widths[col] = max(widths[col], len(format_cell(row.get(col))))
+
+    header = " | ".join(col.ljust(widths[col]) for col in columns)
+    sep = "-+-".join("-" * widths[col] for col in columns)
+    print(header)
+    print(sep)
+    for row in rows:
+        print(" | ".join(format_cell(row.get(col)).ljust(widths[col]) for col in columns))
+
+
+def fetch_accounts():
+    conn = psycopg2.connect(ACCOUNTS_DATABASE_URL)
+    conn.autocommit = True
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            query = f"SELECT account_id, name, balance FROM {ACCOUNTS_TABLE} ORDER BY account_id"
+            cur.execute(query)
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def fetch_transactions(limit=30):
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.autocommit = True
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, account_id, type, amount, status, block_number, created_at, confirmed_at
+                FROM transactions
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def main():
+    print("DB Viewer")
+    print(f"Transactions DB: {DATABASE_URL}")
+    print(f"Accounts DB:     {ACCOUNTS_DATABASE_URL}")
+    print(f"Accounts table:  {ACCOUNTS_TABLE}")
+
+    try:
+        accounts = fetch_accounts()
+        print_table("Accounts", accounts, ["account_id", "name", "balance"])
+    except Exception as exc:
+        print(f"\nCould not load accounts: {exc}")
+
+    try:
+        transactions = fetch_transactions(limit=20)
+        print_table(
+            "Latest Transactions (30)",
+            transactions,
+            ["id", "account_id", "type", "amount", "status", "block_number", "created_at", "confirmed_at"],
+        )
+    except Exception as exc:
+        print(f"\nCould not load transactions: {exc}")
+
+
+if __name__ == "__main__":
+    main()

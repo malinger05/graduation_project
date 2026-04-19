@@ -1,4 +1,44 @@
-# ATM-with-blockchain-logging-fingerprint-authentication
-Raspberry Pi-based smart ATM prototype implementing multi-factor authentication (PIN + fingerprint) with blockchain-based transaction logging on Ethereum Sepolia testnet. All transactions are hashed and stored immutably for tamper-proof auditing.
+# ATM with Blockchain + Indexer + PostgreSQL
 
-This branch also includes a secure SQL user store (`secure_users.db`) managed from Python, with AES-256 encryption for sensitive user information and seeded mock users for development.
+This project now uses a minimal event-sourced architecture:
+
+- **Blockchain (Ethereum Sepolia)**: immutable integrity layer and event source.
+- **Indexer**: continuously syncs pending blockchain writes and confirms them in storage.
+- **PostgreSQL (Transactions DB)**: transaction/query store for indexer and audits.
+- **External Accounts DB**: existing account source for auth and balance updates.
+
+IPFS is no longer used.
+
+## Environment
+
+Required variables in `.env`:
+
+- `CONTRACT_ADDRESS`
+- `ETH_PRIVATE_KEY`
+- `DATABASE_URL` (transactions DB URL, defaults to `postgresql://localhost:5432/atm`)
+- `ACCOUNTS_DATABASE_URL` (optional; defaults to `DATABASE_URL`)
+- `ACCOUNTS_TABLE` (optional; defaults to `accounts`)
+- `ETH_RPC_URL` (optional)
+- `INDEXER_INTERVAL_SECONDS` (optional; defaults to `3`)
+
+## Install
+
+```bash
+pip install -r requirements.txt
+```
+
+## Run
+
+```bash
+python3 atm.py
+```
+
+## Tamper Detection
+
+Each transaction stores a canonical SHA-256 hash in PostgreSQL and writes the same hash on-chain using `storeLog`.
+Integrity verification now checks:
+
+1. Recomputed canonical hash equals DB hash.
+2. Hash decoded from blockchain transaction input equals DB hash.
+3. Contract-level lookup confirms hash presence.
+4. Indexer marked transaction as `confirmed`.
