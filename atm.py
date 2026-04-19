@@ -267,7 +267,7 @@ class ATMWithBlockchain:
             return True, "✅ AUTHENTIC - Hash verified on blockchain"
         else:
             return False, "❌ Transaction is TAMPERED - Hash not found on blockchain"
-    def withdraw(self, amount):
+    def withdraw(self, amount, generate_receipt=True):
         account = self.user_db.get_user_by_account(self.current_account)
         if not account:
             return False, "Account not found", False
@@ -306,7 +306,7 @@ class ATMWithBlockchain:
         log_entry["ipfs_cid"] = blockchain_result.get("ipfs_cid", "")
         self.save_transaction(log_entry)
         # After blockchain_result is successful
-        if blockchain_result['success']:
+        if blockchain_result['success'] and generate_receipt:
             print("\n  📱 Generating QR receipt...")
             self.generate_qr_receipt(log_entry)
         return True, f"Withdrew ${amount}. New balance: ${new_balance}", blockchain_result['success']
