@@ -1,6 +1,6 @@
 # ATM with Blockchain + Indexer + PostgreSQL
 
-This ATM project writes transaction integrity hashes to Ethereum Sepolia, stores transaction records in PostgreSQL, and provides both CLI and web customer flows.
+This ATM project writes transaction integrity hashes to Ethereum Sepolia, stores transaction records in PostgreSQL, and provides a customer web flow.
 
 ## Architecture
 
@@ -28,7 +28,25 @@ source atm_venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 3) Configure environment
+## 3) Configure secrets and environment
+
+This project uses **OS keychain for sensitive values** and `.env` for non-sensitive runtime options.
+
+### 3.1 First-time keyring setup (required)
+
+If you have never used keyring before, run:
+
+```bash
+python3 scripts/manage_secrets.py set CONTRACT_ADDRESS
+python3 scripts/manage_secrets.py set ETH_PRIVATE_KEY
+python3 scripts/manage_secrets.py set DATABASE_URL
+python3 scripts/manage_secrets.py set ACCOUNTS_DATABASE_URL
+python3 scripts/manage_secrets.py set FLASK_SECRET_KEY
+```
+
+You will be prompted for each value and they will be stored in your OS keychain (not in `.env`).
+
+### 3.2 Configure `.env` for non-sensitive options
 
 Create `.env` from the example:
 
@@ -36,97 +54,37 @@ Create `.env` from the example:
 cp .env.example .env
 ```
 
-Update `.env` values:
+Set non-sensitive values in `.env`:
 
 ```env
-CONTRACT_ADDRESS=0xYourSepoliaContract
-ETH_PRIVATE_KEY=your_wallet_private_key_hex
-DATABASE_URL=postgresql://localhost:5432/atm
-ACCOUNTS_DATABASE_URL=postgresql://localhost:5432/atm
 ACCOUNTS_TABLE=accounts
 ETH_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
 ETH_RPC_FALLBACK_URLS=https://sepolia.drpc.org,https://1rpc.io/sepolia
 INDEXER_INTERVAL_SECONDS=3
-FLASK_SECRET_KEY=use_a_long_random_string
+# PORT=5000
 ```
 
-Notes:
+Important:
+- Sensitive values are read from keychain in this project (`CONTRACT_ADDRESS`, `ETH_PRIVATE_KEY`, `DATABASE_URL`, `ACCOUNTS_DATABASE_URL`, `FLASK_SECRET_KEY`).
 - Keep `.env` local only (never commit it).
-- You can also store secrets in OS keychain via `scripts/manage_secrets.py`.
 
-## 4) Create database and accounts table
+## 4) Prepare the provided database
 
-Create the database:
+This project assumes you already have the provided PostgreSQL data (accounts + transactions schema/data).
+After pulling the repository, restore/connect that DB on your machine and set:
 
-```bash
-createdb atm
-```
+- `DATABASE_URL` (in keychain)
+- `ACCOUNTS_DATABASE_URL` (in keychain)
+- `ACCOUNTS_TABLE`
 
-Create accounts schema:
-
-```bash
-psql postgresql://localhost:5432/atm -c "
-CREATE TABLE IF NOT EXISTS accounts (
-  account_id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  pin_hash TEXT,
-  pin TEXT,
-  balance NUMERIC(14,2) NOT NULL DEFAULT 0,
-  failed_attempts INTEGER NOT NULL DEFAULT 0,
-  lockout_until TIMESTAMPTZ,
-  lockout_level INTEGER NOT NULL DEFAULT 0
-);"
-```
-
-Seed sample users (Argon2 PIN hashes):
+If your DB backup uses a different database name or host, update the keychain values:
 
 ```bash
-python3 - <<'PY'
-import os
-import psycopg2
-from argon2 import PasswordHasher
-from dotenv import load_dotenv
-
-load_dotenv(dotenv_path=".env")
-db_url = os.environ.get("ACCOUNTS_DATABASE_URL") or os.environ.get("DATABASE_URL")
-table = os.environ.get("ACCOUNTS_TABLE", "accounts")
-ph = PasswordHasher()
-
-rows = [
-    ("1001", "John Doe", "1234", 500.00),
-    ("1002", "Jane Smith", "5678", 1000.00),
-    ("1003", "Bob Wilson", "9012", 250.00),
-]
-
-conn = psycopg2.connect(db_url)
-conn.autocommit = True
-with conn.cursor() as cur:
-    for account_id, name, pin, balance in rows:
-        cur.execute(
-            f"""
-            INSERT INTO {table} (account_id, name, pin_hash, balance)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (account_id) DO UPDATE
-            SET name = EXCLUDED.name,
-                pin_hash = EXCLUDED.pin_hash,
-                balance = EXCLUDED.balance
-            """,
-            (account_id, name, ph.hash(pin), balance),
-        )
-conn.close()
-print("Seeded sample accounts.")
-PY
+python3 scripts/manage_secrets.py set DATABASE_URL
+python3 scripts/manage_secrets.py set ACCOUNTS_DATABASE_URL
 ```
 
-## 5) Run the system
-
-### Option A: CLI ATM
-
-```bash
-python3 atm.py
-```
-
-### Option B: Customer web UI
+## 5) Run the web app
 
 ```bash
 python3 customer_app.py
@@ -140,13 +98,9 @@ PORT=5001 python3 customer_app.py
 
 Open `http://127.0.0.1:5000` (or your selected port).
 
-## 6) Test login quickly
+## 6) Login check
 
-Use seeded sample credentials:
-
-- `1001 / 1234`
-- `1002 / 5678`
-- `1003 / 9012`
+Use credentials that exist in your restored `accounts` table.
 
 ## 7) What should happen
 
