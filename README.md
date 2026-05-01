@@ -9,7 +9,38 @@ This project now uses a minimal event-sourced architecture:
 
 IPFS is no longer used.
 
-## Environment
+## Secrets and Environment
+
+Secrets are resolved in this order:
+
+1. OS keychain via `keyring` (preferred)
+2. `.env` / environment variables (fallback)
+
+Store secrets in keychain:
+
+```bash
+python3 scripts/manage_secrets.py set CONTRACT_ADDRESS
+python3 scripts/manage_secrets.py set ETH_PRIVATE_KEY
+python3 scripts/manage_secrets.py set DATABASE_URL
+python3 scripts/manage_secrets.py set ACCOUNTS_DATABASE_URL
+python3 scripts/manage_secrets.py set FLASK_SECRET_KEY
+```
+
+Rotate quickly:
+
+```bash
+python3 scripts/manage_secrets.py delete ETH_PRIVATE_KEY
+python3 scripts/manage_secrets.py set ETH_PRIVATE_KEY
+```
+
+Keep non-secret runtime options in `.env`, such as:
+
+- `ACCOUNTS_TABLE`
+- `ETH_RPC_URL`
+- `ETH_RPC_FALLBACK_URLS`
+- `INDEXER_INTERVAL_SECONDS`
+
+### Legacy fallback (.env)
 
 Required variables in `.env`:
 

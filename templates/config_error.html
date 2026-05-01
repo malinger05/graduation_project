@@ -4,7 +4,7 @@
 <section class="card">
   <h1>Cannot start ATM</h1>
   <p class="error-detail">{{ error }}</p>
-  <p class="muted">Configure <code>.env</code> like <code>atm.py</code> (contract, wallet, Pinata). Then restart this app.</p>
+  <p class="muted">Configure <code>.env</code> like <code>atm.py</code> (contract, wallet, DB, and RPC URL). Then restart this app.</p>
   <p><a href="{{ url_for('login') }}">Back to sign in</a></p>
 </section>
 {% endblock %}

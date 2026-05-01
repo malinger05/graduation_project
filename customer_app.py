@@ -1,7 +1,7 @@
 """
 Minimal web UI for ATM customers: login, balance, withdraw, deposit, recent activity.
 Run: python customer_app.py   or   flask --app customer_app run
-Requires the same .env as atm.py (blockchain + Pinata).
+Requires the same .env as atm.py (blockchain + DB + contract settings).
 """
 import os
 import threading
@@ -9,13 +9,24 @@ from functools import wraps
 
 from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, session, url_for
+from secrets_manager import get_secret
 
 load_dotenv()
 
-from atm import ATMWithBlockchain, BlockchainLogger
+from atm_architecture import (
+    ACCOUNTS_DATABASE_URL,
+    ACCOUNTS_TABLE,
+    DATABASE_URL,
+    INDEXER_INTERVAL_SECONDS,
+    ATMApp,
+    AccountsRepository,
+    BlockchainGateway,
+    Indexer,
+    TransactionsRepository,
+)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
+app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
 
 _atm = None
 _atm_lock = threading.Lock()
@@ -27,7 +38,17 @@ def ensure_atm():
     global _atm
     with _atm_lock:
         if _atm is None:
-            _atm = ATMWithBlockchain(BlockchainLogger())
+            accounts_repo = AccountsRepository(ACCOUNTS_DATABASE_URL, ACCOUNTS_TABLE)
+            transactions_repo = TransactionsRepository(DATABASE_URL)
+            blockchain = BlockchainGateway()
+            indexer = Indexer(transactions_repo, blockchain)
+            _atm = ATMApp(accounts_repo, transactions_repo, blockchain, indexer)
+            thread = threading.Thread(
+                target=indexer.run_forever,
+                kwargs={"interval_seconds": INDEXER_INTERVAL_SECONDS},
+                daemon=True,
+            )
+            thread.start()
         return _atm
 
 
@@ -43,13 +64,13 @@ def login_required(view):
 
 def bind_session_user(atm):
     acc = session["account"]
-    user = atm.user_db.get_user_by_account(acc)
+    user = atm.accounts_repo.get_account(acc)
     if not user:
         session.clear()
         flash("Session invalid. Please sign in again.")
         return redirect(url_for("login"))
     atm.current_account = acc
-    atm.current_user = dict(user)
+    session["full_name"] = user.get("name", session.get("full_name", "Customer"))
     return None
 
 
@@ -74,7 +95,7 @@ def login():
     try:
         with atm_ops_lock:
             atm = ensure_atm()
-            user = atm.user_db.verify_credentials(account, pin)
+            user = atm.accounts_repo.authenticate(account, pin)
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 
@@ -83,8 +104,8 @@ def login():
         return render_template("login.html")
 
     session["account"] = account
-    session["full_name"] = user["full_name"]
-    session["user_id"] = user["user_id"]
+    session["full_name"] = user.get("name", "Customer")
+    session["user_id"] = user.get("account_id", account)
     return redirect(url_for("dashboard"))
 
 
@@ -106,10 +127,13 @@ def dashboard():
                 return redir
             balance = atm.check_balance()
             recent = [
-                t
-                for t in atm.local_transactions
-                if t.get("account") == session["account"]
-            ][-10:]
+                {
+                    "type": t.get("type", ""),
+                    "amount": float(t.get("amount", 0) or 0),
+                    "timestamp": str(t.get("created_at", "")),
+                }
+                for t in atm.transactions_repo.get_transactions_for_account(session["account"], 10)
+            ]
             recent.reverse()
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
@@ -137,7 +161,7 @@ def withdraw():
             redir = bind_session_user(atm)
             if redir:
                 return redir
-            _ok, msg, _on_chain = atm.withdraw(amount, generate_receipt=False)
+            _ok, msg, _on_chain = atm.withdraw(amount)
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 

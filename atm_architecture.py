@@ -1,5 +1,6 @@
 import csv
 import hashlib
+import inspect
 import json
 import os
 import time
@@ -7,6 +8,14 @@ import threading
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
+import requests
+from secrets_manager import get_secret
+
+# Python 3.11+ removed inspect.getargspec, but older web3 dependency chains
+# still import it indirectly (via parsimonious). Keep a compatibility alias.
+if not hasattr(inspect, "getargspec"):
+    inspect.getargspec = inspect.getfullargspec
+
 from web3 import Web3
 import qrcode
 
@@ -20,13 +29,18 @@ except ImportError:
 load_dotenv()
 
 DEFAULT_TX_DATABASE_URL = "postgresql://localhost:5432/atm"
-DATABASE_URL = os.environ.get("DATABASE_URL", DEFAULT_TX_DATABASE_URL).strip()
-ACCOUNTS_DATABASE_URL = os.environ.get("ACCOUNTS_DATABASE_URL", DATABASE_URL).strip()
+DATABASE_URL = get_secret("DATABASE_URL", DEFAULT_TX_DATABASE_URL).strip()
+ACCOUNTS_DATABASE_URL = get_secret("ACCOUNTS_DATABASE_URL", DATABASE_URL).strip()
 ACCOUNTS_TABLE = os.environ.get("ACCOUNTS_TABLE", "accounts").strip()
 
-CONTRACT_ADDRESS = os.environ.get("CONTRACT_ADDRESS", "").strip()
-ETH_PRIVATE_KEY = os.environ.get("ETH_PRIVATE_KEY", "").strip()
+CONTRACT_ADDRESS = get_secret("CONTRACT_ADDRESS", "").strip()
+ETH_PRIVATE_KEY = get_secret("ETH_PRIVATE_KEY", "").strip()
 RPC_URL = os.environ.get("ETH_RPC_URL", "https://ethereum-sepolia.publicnode.com").strip()
+RPC_FALLBACK_URLS = [
+    url.strip()
+    for url in os.environ.get("ETH_RPC_FALLBACK_URLS", "").split(",")
+    if url.strip()
+]
 INDEXER_INTERVAL_SECONDS = float(os.environ.get("INDEXER_INTERVAL_SECONDS", "3").strip())
 
 CONTRACT_ABI = [
@@ -51,6 +65,11 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def canonical_hash(payload):
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class AccountsRepository:
     def __init__(self, database_url, table_name):
         self.conn = psycopg2.connect(database_url)
@@ -73,6 +92,12 @@ class AccountsRepository:
             cur.execute(query, (account_id,))
             row = cur.fetchone()
             return float(row[0]) if row else 0.0
+
+    def get_account(self, account_id):
+        query = f"SELECT account_id, name, balance FROM {self.table_name} WHERE account_id=%s"
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, (account_id,))
+            return cur.fetchone()
 
     def apply_balance_change(self, account_id, delta):
         query = f"SELECT balance FROM {self.table_name} WHERE account_id=%s"
@@ -156,6 +181,10 @@ class TransactionsRepository:
         with self.conn.cursor() as cur:
             cur.execute("UPDATE transactions SET status='failed' WHERE id=%s", (tx_id,))
 
+    def mark_transaction_tampered(self, tx_id):
+        with self.conn.cursor() as cur:
+            cur.execute("UPDATE transactions SET status='tampered' WHERE id=%s", (tx_id,))
+
     def get_pending_transactions(self):
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
@@ -163,6 +192,18 @@ class TransactionsRepository:
                 SELECT id, canonical_hash, blockchain_tx
                 FROM transactions
                 WHERE status='pending' AND blockchain_tx IS NOT NULL
+                ORDER BY id ASC
+                """
+            )
+            return cur.fetchall()
+
+    def get_confirmed_transactions(self):
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM transactions
+                WHERE status='confirmed'
                 ORDER BY id ASC
                 """
             )
@@ -204,13 +245,45 @@ class TransactionsRepository:
 class BlockchainGateway:
     def __init__(self):
         if not CONTRACT_ADDRESS or not ETH_PRIVATE_KEY:
-            raise ValueError("Missing CONTRACT_ADDRESS or ETH_PRIVATE_KEY in .env")
-        self.w3 = Web3(Web3.HTTPProvider(RPC_URL))
+            raise ValueError(
+                "Missing CONTRACT_ADDRESS or ETH_PRIVATE_KEY. Set in keychain "
+                "(preferred) or .env."
+            )
+        self.w3 = self._build_provider()
         self.account = self.w3.eth.account.from_key(ETH_PRIVATE_KEY)
         self.contract = self.w3.eth.contract(
             address=Web3.to_checksum_address(CONTRACT_ADDRESS),
             abi=CONTRACT_ABI,
         )
+
+    @staticmethod
+    def _provider_session():
+        session = requests.Session()
+        # Some environments export corporate proxy vars that block Sepolia.
+        # Keep RPC calls direct by ignoring process proxy env.
+        session.trust_env = False
+        return session
+
+    def _build_provider(self):
+        candidates = [RPC_URL] + RPC_FALLBACK_URLS
+        last_error = None
+        for candidate in candidates:
+            try:
+                provider = Web3.HTTPProvider(
+                    candidate,
+                    request_kwargs={"timeout": 20},
+                    session=self._provider_session(),
+                )
+                w3 = Web3(provider)
+                # Force a test call to validate connectivity now.
+                w3.eth.chain_id
+                return w3
+            except Exception as exc:
+                last_error = exc
+        raise ConnectionError(
+            "Unable to reach Ethereum RPC. Set ETH_RPC_URL (and optional "
+            "ETH_RPC_FALLBACK_URLS) in .env to reachable Sepolia endpoints."
+        ) from last_error
 
     def submit_log_hash(self, canonical_hash):
         latest_block = self.w3.eth.get_block("latest")
@@ -252,6 +325,7 @@ class Indexer:
     def __init__(self, transactions_repo, blockchain):
         self.transactions_repo = transactions_repo
         self.blockchain = blockchain
+        self.alerted_tampered_ids = set()
 
     def sync_once(self):
         updated = 0
@@ -274,10 +348,58 @@ class Indexer:
             updated += 1
         return updated
 
+    @staticmethod
+    def _normalize_created_at(created_at):
+        if hasattr(created_at, "astimezone"):
+            return created_at.astimezone(timezone.utc).isoformat()
+        if hasattr(created_at, "isoformat"):
+            return created_at.isoformat()
+        return str(created_at)
+
+    def _verify_integrity(self, txn):
+        created_at = self._normalize_created_at(txn["created_at"])
+        expected = canonical_hash(
+            {
+                "account_id": txn["account_id"],
+                "type": txn["type"],
+                "amount": float(txn["amount"]),
+                "old_balance": float(txn["old_balance"]),
+                "new_balance": float(txn["new_balance"]),
+                "created_at": created_at,
+            }
+        )
+        if expected != txn["canonical_hash"]:
+            return False, "canonical hash mismatch"
+        on_chain_hash = self.blockchain.decode_stored_hash_from_tx(txn["blockchain_tx"])
+        if on_chain_hash != txn["canonical_hash"]:
+            return False, "on-chain hash differs"
+        if not self.blockchain.verify_hash_in_contract(txn["canonical_hash"]):
+            return False, "hash missing in contract"
+        return True, "ok"
+
+    def monitor_tampering_once(self, report_fn=print):
+        tampered_count = 0
+        for txn in self.transactions_repo.get_confirmed_transactions():
+            valid, reason = self._verify_integrity(txn)
+            if valid:
+                continue
+            tx_id = txn["id"]
+            self.transactions_repo.mark_transaction_tampered(tx_id)
+            tampered_count += 1
+            if tx_id in self.alerted_tampered_ids:
+                continue
+            self.alerted_tampered_ids.add(tx_id)
+            report_fn(
+                f"[ALERT] Tampering detected for transaction #{tx_id}: {reason} "
+                f"(account={txn['account_id']}, blockchain_tx={txn['blockchain_tx']})"
+            )
+        return tampered_count
+
     def run_forever(self, interval_seconds=3):
         while True:
             try:
                 self.sync_once()
+                self.monitor_tampering_once()
             except Exception:
                 pass
             time.sleep(interval_seconds)
@@ -293,8 +415,7 @@ class ATMApp:
 
     @staticmethod
     def canonical_hash(payload):
-        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return canonical_hash(payload)
 
     def authenticate(self, account_id, pin):
         account = self.accounts_repo.authenticate(account_id, pin)
