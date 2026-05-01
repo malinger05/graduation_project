@@ -226,3 +226,55 @@ code {
   padding: 0.15rem 0.35rem;
   border-radius: 4px;
 }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 14, 20, 0.7);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  z-index: 999;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 1rem;
+  box-shadow: 0 14px 42px rgba(0, 0, 0, 0.4);
+  text-align: center;
+}
+
+.modal-copy {
+  margin-bottom: 0.75rem;
+}
+
+.qr-image {
+  width: 220px;
+  height: 220px;
+  max-width: 100%;
+  border-radius: 8px;
+  background: #fff;
+  padding: 0.4rem;
+}
+
+.modal-link {
+  display: block;
+  margin: 0.9rem 0 0.5rem;
+  text-decoration: none;
+}
+
+.modal-close {
+  margin-top: 0.1rem;
+}
+
+.qr-reopen {
+  margin: 0 0 0.75rem;
+  padding-left: 0;
+}

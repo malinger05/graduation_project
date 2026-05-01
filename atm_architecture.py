@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 import requests
+from argon2 import PasswordHasher  # type: ignore[reportMissingImports]
+from argon2.exceptions import VerificationError, VerifyMismatchError  # type: ignore[reportMissingImports]
 from secrets_manager import get_secret
 
 # Python 3.11+ removed inspect.getargspec, but older web3 dependency chains
@@ -75,16 +77,28 @@ class AccountsRepository:
         self.conn = psycopg2.connect(database_url)
         self.conn.autocommit = True
         self.table_name = table_name
+        self.pin_hasher = PasswordHasher()
 
     def authenticate(self, account_id, pin):
         query = f"""
-            SELECT account_id, name, balance
+            SELECT account_id, name, balance, COALESCE(pin_hash, pin) AS pin_hash
             FROM {self.table_name}
-            WHERE account_id=%s AND pin=%s
+            WHERE account_id=%s
         """
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(query, (account_id, pin))
-            return cur.fetchone()
+            cur.execute(query, (account_id,))
+            account = cur.fetchone()
+            if not account:
+                return None
+            stored_pin_hash = account.get("pin_hash")
+            if not stored_pin_hash:
+                return None
+            try:
+                self.pin_hasher.verify(str(stored_pin_hash), str(pin))
+            except (VerifyMismatchError, VerificationError):
+                return None
+            account.pop("pin_hash", None)
+            return account
 
     def get_balance(self, account_id):
         query = f"SELECT balance FROM {self.table_name} WHERE account_id=%s"

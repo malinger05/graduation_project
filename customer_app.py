@@ -4,11 +4,14 @@ Run: python customer_app.py   or   flask --app customer_app run
 Requires the same .env as atm.py (blockchain + DB + contract settings).
 """
 import os
+import io
+import base64
 import threading
 from functools import wraps
 
 from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, session, url_for
+import qrcode
 from secrets_manager import get_secret
 
 load_dotenv()
@@ -32,6 +35,22 @@ _atm = None
 _atm_lock = threading.Lock()
 # Serialize operations on the shared ATM instance (simple local demo; not multi-tenant safe).
 atm_ops_lock = threading.Lock()
+
+
+def build_qr_data_uri(content):
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=8,
+        border=2,
+    )
+    qr.add_data(content)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 def ensure_atm():
@@ -138,11 +157,15 @@ def dashboard():
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 
+    qr_popup = session.pop("qr_popup", None)
+    last_qr = session.get("last_qr")
     return render_template(
         "dashboard.html",
         full_name=session.get("full_name", "Customer"),
         balance=balance,
         recent=recent,
+        qr_popup=qr_popup,
+        last_qr=last_qr,
     )
 
 
@@ -161,7 +184,20 @@ def withdraw():
             redir = bind_session_user(atm)
             if redir:
                 return redir
-            _ok, msg, _on_chain = atm.withdraw(amount)
+            ok, msg, _on_chain = atm.withdraw(amount)
+            if ok:
+                txn = atm.transactions_repo.get_latest_transaction_for_account(session["account"])
+                tx_hash = txn.get("blockchain_tx") if txn else None
+                if tx_hash:
+                    verify_url = f"https://sepolia.etherscan.io/tx/{tx_hash}"
+                    qr_payload = {
+                        "type": txn.get("type", ""),
+                        "amount": float(txn.get("amount", 0) or 0),
+                        "verify_url": verify_url,
+                        "qr_data_uri": build_qr_data_uri(verify_url),
+                    }
+                    session["qr_popup"] = qr_payload
+                    session["last_qr"] = qr_payload
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 
@@ -184,7 +220,20 @@ def deposit():
             redir = bind_session_user(atm)
             if redir:
                 return redir
-            _ok, msg, _on_chain = atm.deposit(amount)
+            ok, msg, _on_chain = atm.deposit(amount)
+            if ok:
+                txn = atm.transactions_repo.get_latest_transaction_for_account(session["account"])
+                tx_hash = txn.get("blockchain_tx") if txn else None
+                if tx_hash:
+                    verify_url = f"https://sepolia.etherscan.io/tx/{tx_hash}"
+                    qr_payload = {
+                        "type": txn.get("type", ""),
+                        "amount": float(txn.get("amount", 0) or 0),
+                        "verify_url": verify_url,
+                        "qr_data_uri": build_qr_data_uri(verify_url),
+                    }
+                    session["qr_popup"] = qr_payload
+                    session["last_qr"] = qr_payload
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 

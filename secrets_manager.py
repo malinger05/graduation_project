@@ -8,12 +8,27 @@ except ImportError:  # pragma: no cover - optional at runtime
 
 
 SERVICE_NAME = "atm-app"
-
-
-def get_secret(name: str, default: Optional[str] = None, required: bool = False) -> str:
+SENSITIVE_SECRET_NAMES = {
+    "ETH_PRIVATE_KEY",
+    "FLASK_SECRET_KEY",
+    "DATABASE_URL",
+    "ACCOUNTS_DATABASE_URL",
+    "CONTRACT_ADDRESS",
+    "ATM_MFA_DEFAULT_TOTP_SECRET",
+}
+def get_secret(
+    name: str,
+    default: Optional[str] = None,
+    required: bool = False,
+    allow_env_fallback: Optional[bool] = None,
+) -> str:
     """
-    Resolve a secret from keychain first, then environment fallback.
+    Resolve a secret from keychain first.
+    Sensitive secrets never fall back to environment variables.
     """
+    if allow_env_fallback is None:
+        allow_env_fallback = name not in SENSITIVE_SECRET_NAMES
+
     value = None
     if keyring is not None:
         try:
@@ -21,14 +36,15 @@ def get_secret(name: str, default: Optional[str] = None, required: bool = False)
         except Exception:
             value = None
 
-    if not value:
+    if not value and allow_env_fallback:
         env_val = os.environ.get(name, "")
         value = env_val.strip() if isinstance(env_val, str) else env_val
 
     if required and not value:
+        fallback_note = "environment" if allow_env_fallback else "keychain"
         raise ValueError(
             f"Missing required secret: {name}. Set it in keychain (preferred) "
-            f"or environment."
+            f"or {fallback_note}."
         )
     return value if value is not None else (default or "")
 

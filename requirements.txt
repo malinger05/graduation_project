@@ -3,3 +3,5 @@ python-dotenv>=1.0.0
 psycopg2-binary>=2.9.9
 qrcode[pil]>=7.4.2
 keyring>=25.0.0
+Flask>=3.0.0
+argon2-cffi>=23.1.0

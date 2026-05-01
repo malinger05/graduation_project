@@ -7,6 +7,7 @@
   </form>
 {% endblock %}
 {% block body %}
+{% set qr_data = qr_popup or last_qr %}
 <section class="card balance-card">
   <p class="muted">Available balance</p>
   <p class="balance">${{ "%.2f"|format(balance) }}</p>
@@ -30,6 +31,9 @@
 
 <section class="card">
   <h2 class="h2">Recent activity</h2>
+  {% if last_qr and last_qr.verify_url %}
+    <button type="button" class="btn ghost qr-reopen" id="tx-verify-open">Show last QR again</button>
+  {% endif %}
   {% if recent %}
     <ul class="activity">
       {% for t in recent %}
@@ -44,4 +48,42 @@
     <p class="muted">No transactions yet.</p>
   {% endif %}
 </section>
+
+{% if qr_data and qr_data.verify_url %}
+<div id="tx-verify-modal" class="modal-overlay {% if not qr_popup %}hidden{% endif %}" role="dialog" aria-modal="true" aria-labelledby="tx-verify-title">
+  <div class="modal-card">
+    <h2 id="tx-verify-title" class="h2">Verify transaction</h2>
+    <p class="muted modal-copy">
+      {{ qr_data.type }} ${{ "%.2f"|format(qr_data.amount) }} was logged on-chain.
+      Scan the QR code or open the link to verify.
+    </p>
+    <img class="qr-image" alt="QR code for blockchain transaction verification" src="{{ qr_data.qr_data_uri }}">
+    <a class="btn primary modal-link" href="{{ qr_data.verify_url }}" target="_blank" rel="noopener noreferrer">
+      Open verification link
+    </a>
+    <button type="button" class="btn ghost modal-close" id="tx-verify-close">Close</button>
+  </div>
+</div>
+<script>
+  (function () {
+    const modal = document.getElementById("tx-verify-modal");
+    const closeBtn = document.getElementById("tx-verify-close");
+    const openBtn = document.getElementById("tx-verify-open");
+    if (!modal || !closeBtn) return;
+    const openModal = function () {
+      modal.classList.remove("hidden");
+    };
+    const closeModal = function () {
+      modal.classList.add("hidden");
+    };
+    if (openBtn) {
+      openBtn.addEventListener("click", openModal);
+    }
+    closeBtn.addEventListener("click", closeModal);
+    modal.addEventListener("click", function (event) {
+      if (event.target === modal) closeModal();
+    });
+  })();
+</script>
+{% endif %}
 {% endblock %}
