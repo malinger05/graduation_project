@@ -40,6 +40,7 @@
         <li>
           <span class="tag">{{ t.type }}</span>
           <span class="amt">${{ "%.2f"|format(t.amount) }}</span>
+          <span class="tag">{{ t.status }}</span>
           <span class="time">{{ t.timestamp[:19] }}</span>
         </li>
       {% endfor %}

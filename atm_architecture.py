@@ -3,8 +3,8 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import time
-import threading
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -61,6 +61,8 @@ CONTRACT_ABI = [
         "type": "function",
     },
 ]
+
+_VALID_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def now_iso():
@@ -156,6 +158,100 @@ class TransactionsRepository:
                 );
                 """
             )
+            # Backward-compatible schema evolution for safer local/chain state transitions.
+            cur.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS error_reason TEXT")
+            cur.execute(
+                "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0"
+            )
+            cur.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ")
+            cur.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS operation_key TEXT")
+            cur.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS last_retry_at TIMESTAMPTZ")
+            cur.execute("UPDATE transactions SET status='queued_for_chain' WHERE status='pending'")
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_transactions_status_retry
+                ON transactions (status, next_retry_at, id)
+                """
+            )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_operation_key
+                ON transactions (operation_key)
+                WHERE operation_key IS NOT NULL
+                """
+            )
+
+    @staticmethod
+    def _safe_identifier(name):
+        if not _VALID_IDENTIFIER.match(name):
+            raise ValueError(f"Invalid SQL identifier: {name}")
+        return name
+
+    def create_local_transaction_atomic(self, accounts_table, account_id, tx_type, amount, created_at):
+        table = self._safe_identifier(accounts_table)
+        previous_autocommit = self.conn.autocommit
+        self.conn.autocommit = False
+        try:
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    f"SELECT balance FROM {table} WHERE account_id=%s FOR UPDATE",
+                    (account_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    self.conn.rollback()
+                    return None, "Account not found."
+
+                old_balance = float(row["balance"])
+                delta = -float(amount) if tx_type == "WITHDRAW" else float(amount)
+                new_balance = old_balance + delta
+                if new_balance < 0:
+                    self.conn.rollback()
+                    return None, "Insufficient funds"
+
+                cur.execute(
+                    f"UPDATE {table} SET balance=%s WHERE account_id=%s",
+                    (new_balance, account_id),
+                )
+
+                payload = {
+                    "account_id": account_id,
+                    "type": tx_type,
+                    "amount": float(amount),
+                    "old_balance": old_balance,
+                    "new_balance": new_balance,
+                    "created_at": created_at,
+                }
+                payload["canonical_hash"] = canonical_hash(payload)
+                operation_key = f"{account_id}:{payload['canonical_hash']}"
+                cur.execute(
+                    """
+                    INSERT INTO transactions (
+                        account_id, type, amount, old_balance, new_balance,
+                        status, canonical_hash, blockchain_tx, created_at,
+                        operation_key, retry_count, next_retry_at
+                    ) VALUES (%s,%s,%s,%s,%s,'initiated',%s,NULL,%s,%s,0,NOW())
+                    RETURNING id, account_id, type, amount, old_balance, new_balance, created_at, canonical_hash, status
+                    """,
+                    (
+                        payload["account_id"],
+                        payload["type"],
+                        payload["amount"],
+                        payload["old_balance"],
+                        payload["new_balance"],
+                        payload["canonical_hash"],
+                        payload["created_at"],
+                        operation_key,
+                    ),
+                )
+                local_tx = cur.fetchone()
+                self.conn.commit()
+                return local_tx, ""
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            self.conn.autocommit = previous_autocommit
 
     def create_transaction(self, data):
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -185,15 +281,44 @@ class TransactionsRepository:
             cur.execute(
                 """
                 UPDATE transactions
-                SET status='confirmed', block_number=%s, tx_index=%s, confirmed_at=NOW()
+                SET status='confirmed', block_number=%s, tx_index=%s, confirmed_at=NOW(), error_reason=NULL
                 WHERE id=%s
                 """,
                 (block_number, tx_index, tx_id),
             )
 
-    def mark_transaction_failed(self, tx_id):
+    def mark_transaction_submitted(self, tx_id, tx_hash):
         with self.conn.cursor() as cur:
-            cur.execute("UPDATE transactions SET status='failed' WHERE id=%s", (tx_id,))
+            cur.execute(
+                """
+                UPDATE transactions
+                SET blockchain_tx=%s, status='queued_for_chain', error_reason=NULL, next_retry_at=NULL
+                WHERE id=%s
+                """,
+                (tx_hash, tx_id),
+            )
+
+    def mark_transaction_failed(self, tx_id, reason="Blockchain submission/confirmation failed"):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "UPDATE transactions SET status='failed', error_reason=%s WHERE id=%s",
+                (reason, tx_id),
+            )
+
+    def schedule_submission_retry(self, tx_id, reason, delay_seconds=10):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE transactions
+                SET status='failed',
+                    error_reason=%s,
+                    retry_count=retry_count+1,
+                    last_retry_at=NOW(),
+                    next_retry_at=NOW() + (%s * INTERVAL '1 second')
+                WHERE id=%s
+                """,
+                (reason, int(delay_seconds), tx_id),
+            )
 
     def mark_transaction_tampered(self, tx_id):
         with self.conn.cursor() as cur:
@@ -205,9 +330,26 @@ class TransactionsRepository:
                 """
                 SELECT id, canonical_hash, blockchain_tx
                 FROM transactions
-                WHERE status='pending' AND blockchain_tx IS NOT NULL
+                WHERE status IN ('queued_for_chain', 'pending') AND blockchain_tx IS NOT NULL
                 ORDER BY id ASC
                 """
+            )
+            return cur.fetchall()
+
+    def get_transactions_for_submission(self, limit=25, max_retries=8):
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, account_id, canonical_hash, retry_count
+                FROM transactions
+                WHERE blockchain_tx IS NULL
+                  AND status IN ('initiated', 'failed')
+                  AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+                  AND retry_count < %s
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+                (max_retries, limit),
             )
             return cur.fetchall()
 
@@ -348,12 +490,12 @@ class Indexer:
             if not receipt:
                 continue
             if receipt.status != 1:
-                self.transactions_repo.mark_transaction_failed(txn["id"])
+                self.transactions_repo.mark_transaction_failed(txn["id"], "On-chain receipt status != 1")
                 updated += 1
                 continue
             on_chain_hash = self.blockchain.decode_stored_hash_from_tx(txn["blockchain_tx"])
             if on_chain_hash != txn["canonical_hash"]:
-                self.transactions_repo.mark_transaction_failed(txn["id"])
+                self.transactions_repo.mark_transaction_failed(txn["id"], "On-chain hash mismatch during sync")
                 updated += 1
                 continue
             self.transactions_repo.update_transaction_confirmation(
@@ -361,6 +503,17 @@ class Indexer:
             )
             updated += 1
         return updated
+
+    def process_submission_retries_once(self):
+        submitted = 0
+        for txn in self.transactions_repo.get_transactions_for_submission():
+            try:
+                tx_hash = self.blockchain.submit_log_hash(txn["canonical_hash"])
+                self.transactions_repo.mark_transaction_submitted(txn["id"], tx_hash)
+                submitted += 1
+            except Exception as exc:
+                self.transactions_repo.schedule_submission_retry(txn["id"], str(exc), delay_seconds=10)
+        return submitted
 
     @staticmethod
     def _normalize_created_at(created_at):
@@ -412,6 +565,7 @@ class Indexer:
     def run_forever(self, interval_seconds=3):
         while True:
             try:
+                self.process_submission_retries_once()
                 self.sync_once()
                 self.monitor_tampering_once()
             except Exception:
@@ -444,31 +598,36 @@ class ATMApp:
         return self.accounts_repo.get_balance(self.current_account)
 
     def _record(self, tx_type, amount):
-        delta = -amount if tx_type == "WITHDRAW" else amount
-        balances = self.accounts_repo.apply_balance_change(self.current_account, delta)
-        if balances is None:
-            return False, "Insufficient funds", False
+        if hasattr(self.accounts_repo, "conn") and hasattr(self.transactions_repo, "conn"):
+            if self.accounts_repo.conn.dsn != self.transactions_repo.conn.dsn:
+                return (
+                    False,
+                    "Atomic mode requires ACCOUNTS_DATABASE_URL and DATABASE_URL to point to the same PostgreSQL database.",
+                    False,
+                )
+        created_at = now_iso()
+        local_tx, err = self.transactions_repo.create_local_transaction_atomic(
+            self.accounts_repo.table_name, self.current_account, tx_type, float(amount), created_at
+        )
+        if not local_tx:
+            return False, err or "Unable to create local transaction", False
 
-        old_balance, new_balance = balances
-        payload = {
-            "account_id": self.current_account,
-            "type": tx_type,
-            "amount": float(amount),
-            "old_balance": old_balance,
-            "new_balance": new_balance,
-            "created_at": now_iso(),
-        }
-        payload["canonical_hash"] = self.canonical_hash(payload)
-        payload["blockchain_tx"] = self.blockchain.submit_log_hash(payload["canonical_hash"])
-        tx_id = self.transactions_repo.create_transaction(payload)
-        # Auto-sync confirmations after each transaction to avoid manual indexer steps.
-        for _ in range(6):
-            self.indexer.sync_once()
-            row = self.transactions_repo.get_transaction_by_id(tx_id)
-            if row and row["status"] != "pending":
-                break
-            time.sleep(2)
-        return True, f"{tx_type} ${amount:.2f}. New balance: ${new_balance:.2f}", True
+        tx_id = local_tx["id"]
+        new_balance = float(local_tx["new_balance"])
+        try:
+            tx_hash = self.blockchain.submit_log_hash(local_tx["canonical_hash"])
+            self.transactions_repo.mark_transaction_submitted(tx_id, tx_hash)
+            return True, f"{tx_type} ${amount:.2f}. New balance: ${new_balance:.2f}", True
+        except Exception as exc:
+            self.transactions_repo.schedule_submission_retry(tx_id, str(exc), delay_seconds=10)
+            return (
+                True,
+                (
+                    f"{tx_type} ${amount:.2f}. New balance: ${new_balance:.2f}. "
+                    "Recorded locally; blockchain sync will retry shortly."
+                ),
+                False,
+            )
 
     def withdraw(self, amount):
         return self._record("WITHDRAW", amount) if amount > 0 else (False, "Amount must be positive", False)
@@ -571,12 +730,6 @@ def main():
     blockchain = BlockchainGateway()
     indexer = Indexer(transactions_repo, blockchain)
     atm = ATMApp(accounts_repo, transactions_repo, blockchain, indexer)
-    thread = threading.Thread(
-        target=indexer.run_forever,
-        kwargs={"interval_seconds": INDEXER_INTERVAL_SECONDS},
-        daemon=True,
-    )
-    thread.start()
 
     while True:
         print("\n1. Login\n2. Exit")

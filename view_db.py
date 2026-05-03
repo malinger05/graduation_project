@@ -3,6 +3,8 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 
+from secrets_manager import get_secret
+
 try:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -12,8 +14,9 @@ except ImportError as exc:
 
 load_dotenv()
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/atm").strip()
-ACCOUNTS_DATABASE_URL = os.environ.get("ACCOUNTS_DATABASE_URL", DATABASE_URL).strip()
+_DEFAULT_DB = "postgresql://localhost:5432/atm"
+DATABASE_URL = get_secret("DATABASE_URL", _DEFAULT_DB).strip()
+ACCOUNTS_DATABASE_URL = get_secret("ACCOUNTS_DATABASE_URL", DATABASE_URL).strip()
 ACCOUNTS_TABLE = os.environ.get("ACCOUNTS_TABLE", "accounts").strip()
 
 

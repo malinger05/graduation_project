@@ -1,7 +1,7 @@
 """
 Minimal web UI for ATM customers: login, balance, withdraw, deposit, recent activity.
 Run: python customer_app.py   or   flask --app customer_app run
-Requires the same .env as atm.py (blockchain + DB + contract settings).
+Run worker.py separately for background indexer tasks.
 """
 import os
 import io
@@ -20,7 +20,6 @@ from atm_architecture import (
     ACCOUNTS_DATABASE_URL,
     ACCOUNTS_TABLE,
     DATABASE_URL,
-    INDEXER_INTERVAL_SECONDS,
     ATMApp,
     AccountsRepository,
     BlockchainGateway,
@@ -62,12 +61,6 @@ def ensure_atm():
             blockchain = BlockchainGateway()
             indexer = Indexer(transactions_repo, blockchain)
             _atm = ATMApp(accounts_repo, transactions_repo, blockchain, indexer)
-            thread = threading.Thread(
-                target=indexer.run_forever,
-                kwargs={"interval_seconds": INDEXER_INTERVAL_SECONDS},
-                daemon=True,
-            )
-            thread.start()
         return _atm
 
 
@@ -150,6 +143,7 @@ def dashboard():
                     "type": t.get("type", ""),
                     "amount": float(t.get("amount", 0) or 0),
                     "timestamp": str(t.get("created_at", "")),
+                    "status": t.get("status", "unknown"),
                 }
                 for t in atm.transactions_repo.get_transactions_for_account(session["account"], 10)
             ]
