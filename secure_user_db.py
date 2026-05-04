@@ -1,9 +1,10 @@
 import base64
-import hashlib
 import os
 import sqlite3
 from datetime import datetime
 
+from argon2 import PasswordHasher
+from argon2.exceptions import VerificationError, VerifyMismatchError
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
@@ -17,9 +18,11 @@ class SecureUserDatabase:
     def __init__(self, db_path=DB_FILE, key_path=KEY_FILE):
         self.db_path = db_path
         self.key_path = key_path
+        self.password_hasher = PasswordHasher()
         self.aes_key = self._load_or_create_key()
         self._initialize_schema()
-        self.seed_mock_users()
+        if self._should_seed_mock_users():
+            self.seed_mock_users()
 
     def _load_or_create_key(self):
         if os.path.exists(self.key_path):
@@ -81,8 +84,36 @@ class SecureUserDatabase:
         return decrypted.decode("utf-8")
 
     @staticmethod
-    def _sha256(value):
-        return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+    def _is_argon_hash(value):
+        return isinstance(value, str) and value.startswith("$argon2")
+
+    def _hash_secret(self, value):
+        return self.password_hasher.hash(str(value))
+
+    def _verify_secret(self, stored_hash, provided_value):
+        """
+        Verify a stored Argon2 hash and optionally return a rehash value.
+        Returns: (is_valid, upgraded_hash_or_none)
+        """
+        if not stored_hash:
+            return False, None
+
+        # PINs and biometric IDs must always be Argon2 hashes.
+        if not self._is_argon_hash(stored_hash):
+            return False, None
+        try:
+            is_valid = self.password_hasher.verify(stored_hash, str(provided_value))
+            if not is_valid:
+                return False, None
+            if self.password_hasher.check_needs_rehash(stored_hash):
+                return True, self._hash_secret(provided_value)
+            return True, None
+        except (VerifyMismatchError, VerificationError):
+            return False, None
+
+    @staticmethod
+    def _should_seed_mock_users():
+        return os.environ.get("ATM_SEED_MOCK_USERS", "").strip().lower() in {"1", "true", "yes", "on"}
 
     def seed_mock_users(self):
         with self._connect() as conn:
@@ -146,8 +177,8 @@ class SecureUserDatabase:
                         self._encrypt_value(full_name),
                         self._encrypt_value(row["email"]),
                         self._encrypt_value(row["phone"]),
-                        self._sha256(row["fingerprint_id"]),
-                        self._sha256(row["pin"]),
+                        self._hash_secret(row["fingerprint_id"]),
+                        self._hash_secret(row["pin"]),
                         row["balance"],
                         now,
                         now,
@@ -171,14 +202,25 @@ class SecureUserDatabase:
                 return None
             if row[5] != 1:
                 return None
-            if row[4] != self._sha256(pin):
+            is_valid_pin, upgraded_pin_hash = self._verify_secret(row[4], pin)
+            if not is_valid_pin:
                 return None
 
             now = datetime.now().isoformat()
-            conn.execute(
-                "UPDATE users SET last_login_at = ?, updated_at = ? WHERE account_number = ?",
-                (now, now, account_number),
-            )
+            if upgraded_pin_hash:
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET pin_hash = ?, last_login_at = ?, updated_at = ?
+                    WHERE account_number = ?
+                    """,
+                    (upgraded_pin_hash, now, now, account_number),
+                )
+            else:
+                conn.execute(
+                    "UPDATE users SET last_login_at = ?, updated_at = ? WHERE account_number = ?",
+                    (now, now, account_number),
+                )
             conn.commit()
 
             return {
