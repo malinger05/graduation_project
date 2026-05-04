@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -18,6 +19,13 @@ _DEFAULT_DB = "postgresql://localhost:5432/atm"
 DATABASE_URL = get_secret("DATABASE_URL", _DEFAULT_DB).strip()
 ACCOUNTS_DATABASE_URL = get_secret("ACCOUNTS_DATABASE_URL", DATABASE_URL).strip()
 ACCOUNTS_TABLE = os.environ.get("ACCOUNTS_TABLE", "accounts").strip()
+_VALID_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def safe_identifier(name):
+    if not _VALID_IDENTIFIER.match(name):
+        raise ValueError(f"Invalid SQL identifier: {name}")
+    return name
 
 
 def format_cell(value):
@@ -53,7 +61,8 @@ def fetch_accounts():
     conn.autocommit = True
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            query = f"SELECT account_id, name, balance FROM {ACCOUNTS_TABLE} ORDER BY account_id"
+            table = safe_identifier(ACCOUNTS_TABLE)
+            query = f"SELECT account_id, name, balance FROM {table} ORDER BY account_id"
             cur.execute(query)
             return cur.fetchall()
     finally:

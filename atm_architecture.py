@@ -78,10 +78,16 @@ class AccountsRepository:
     def __init__(self, database_url, table_name):
         self.conn = psycopg2.connect(database_url)
         self.conn.autocommit = True
-        self.table_name = table_name
+        self.table_name = self._safe_identifier(table_name)
         self.pin_hasher = PasswordHasher()
         self.lockout_minutes = [5, 10, 15]
         self._ensure_auth_columns()
+
+    @staticmethod
+    def _safe_identifier(name):
+        if not _VALID_IDENTIFIER.match(name):
+            raise ValueError(f"Invalid SQL identifier: {name}")
+        return name
 
     def _ensure_auth_columns(self):
         with self.conn.cursor() as cur:
