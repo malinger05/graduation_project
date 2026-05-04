@@ -179,6 +179,35 @@ input:focus {
   font-size: 0.9rem;
 }
 
+.lockout-box {
+  margin: 0 0 1rem;
+  padding: 0.8rem;
+  border-radius: 10px;
+  border: 1px solid var(--danger);
+  background: rgba(196, 92, 92, 0.13);
+}
+
+.lockout-label {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.lockout-time {
+  margin: 0.25rem 0;
+  font-size: 1.9rem;
+  font-weight: 700;
+  color: #ffd2d2;
+}
+
+.lockout-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .activity {
   list-style: none;
   padding: 0;

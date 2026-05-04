@@ -36,6 +36,12 @@ _atm_lock = threading.Lock()
 atm_ops_lock = threading.Lock()
 
 
+def format_remaining_lock_time(total_seconds):
+    seconds = max(0, int(total_seconds or 0))
+    minutes, seconds = divmod(seconds, 60)
+    return f"{minutes:02d}:{seconds:02d}"
+
+
 def build_qr_data_uri(content):
     qr = qrcode.QRCode(
         version=1,
@@ -96,25 +102,45 @@ def index():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "GET":
-        return render_template("login.html")
+        return render_template("login.html", remaining_lock_seconds=0)
 
     account = (request.form.get("account") or "").strip()
     pin = (request.form.get("pin") or "").strip()
     if not account or not pin:
         flash("Enter account number and PIN.")
-        return render_template("login.html")
+        return render_template("login.html", remaining_lock_seconds=0)
 
     try:
         with atm_ops_lock:
             atm = ensure_atm()
-            user = atm.accounts_repo.authenticate(account, pin)
+            auth_result = atm.accounts_repo.authenticate_with_status(account, pin)
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 
-    if not user:
-        flash("Invalid account number or PIN.")
-        return render_template("login.html")
+    auth_status = auth_result.get("status")
+    if auth_status == "locked":
+        remaining_seconds = int(auth_result.get("remaining_lock_seconds", 0) or 0)
+        remaining = format_remaining_lock_time(remaining_seconds)
+        if auth_result.get("lock_minutes"):
+            flash(
+                f"Too many failed attempts. Account is locked for {auth_result['lock_minutes']} minutes. "
+                f"Try again in {remaining}."
+            )
+        else:
+            flash(f"Account is locked. Try again in {remaining}.")
+        return render_template("login.html", remaining_lock_seconds=remaining_seconds)
 
+    if auth_status != "ok":
+        attempts_to_next_lock = auth_result.get("attempts_to_next_lock")
+        if attempts_to_next_lock:
+            flash(
+                f"Invalid account number or PIN. {attempts_to_next_lock} attempt(s) left before lockout."
+            )
+        else:
+            flash("Invalid account number or PIN.")
+        return render_template("login.html", remaining_lock_seconds=0)
+
+    user = auth_result["account"]
     session["account"] = account
     session["full_name"] = user.get("name", "Customer")
     session["user_id"] = user.get("account_id", account)

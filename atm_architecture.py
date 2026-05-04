@@ -5,7 +5,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 import requests
@@ -80,10 +80,32 @@ class AccountsRepository:
         self.conn.autocommit = True
         self.table_name = table_name
         self.pin_hasher = PasswordHasher()
+        self.lockout_minutes = [5, 10, 15]
+        self._ensure_auth_columns()
 
-    def authenticate(self, account_id, pin):
+    def _ensure_auth_columns(self):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"ALTER TABLE {self.table_name} ADD COLUMN IF NOT EXISTS failed_attempts INTEGER NOT NULL DEFAULT 0"
+            )
+            cur.execute(
+                f"ALTER TABLE {self.table_name} ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ"
+            )
+
+    @staticmethod
+    def _remaining_lock_seconds(locked_until):
+        if not locked_until:
+            return 0
+        now = datetime.now(timezone.utc)
+        if getattr(locked_until, "tzinfo", None) is None:
+            locked_until = locked_until.replace(tzinfo=timezone.utc)
+        delta = (locked_until - now).total_seconds()
+        return int(delta) if delta > 0 else 0
+
+    def authenticate_with_status(self, account_id, pin):
         query = f"""
-            SELECT account_id, name, balance, COALESCE(pin_hash, pin) AS pin_hash
+            SELECT account_id, name, balance, COALESCE(pin_hash, pin) AS pin_hash,
+                   COALESCE(failed_attempts, 0) AS failed_attempts, locked_until
             FROM {self.table_name}
             WHERE account_id=%s
         """
@@ -91,16 +113,74 @@ class AccountsRepository:
             cur.execute(query, (account_id,))
             account = cur.fetchone()
             if not account:
-                return None
+                return {"status": "invalid"}
+
+            locked_until = account.get("locked_until")
+            remaining_seconds = self._remaining_lock_seconds(locked_until)
+            if remaining_seconds > 0:
+                return {
+                    "status": "locked",
+                    "remaining_lock_seconds": remaining_seconds,
+                }
+
             stored_pin_hash = account.get("pin_hash")
             if not stored_pin_hash:
-                return None
+                return {"status": "invalid"}
+
             try:
                 self.pin_hasher.verify(str(stored_pin_hash), str(pin))
             except (VerifyMismatchError, VerificationError):
-                return None
+                current_failed = int(account.get("failed_attempts", 0) or 0)
+                failed_attempts = current_failed + 1
+
+                lock_minutes = 0
+                new_locked_until = None
+                if failed_attempts % 3 == 0:
+                    lock_level = min((failed_attempts // 3), len(self.lockout_minutes))
+                    lock_minutes = self.lockout_minutes[lock_level - 1]
+                    new_locked_until = datetime.now(timezone.utc) + timedelta(minutes=lock_minutes)
+
+                cur.execute(
+                    f"""
+                    UPDATE {self.table_name}
+                    SET failed_attempts=%s, locked_until=%s
+                    WHERE account_id=%s
+                    """,
+                    (failed_attempts, new_locked_until, account_id),
+                )
+
+                if lock_minutes:
+                    return {
+                        "status": "locked",
+                        "remaining_lock_seconds": lock_minutes * 60,
+                        "lock_minutes": lock_minutes,
+                    }
+
+                attempts_to_next_lock = 3 - (failed_attempts % 3)
+                return {
+                    "status": "invalid",
+                    "attempts_to_next_lock": attempts_to_next_lock,
+                }
+
+            cur.execute(
+                f"""
+                UPDATE {self.table_name}
+                SET failed_attempts=0, locked_until=NULL
+                WHERE account_id=%s
+                """,
+                (account_id,),
+            )
+
             account.pop("pin_hash", None)
-            return account
+            account.pop("failed_attempts", None)
+            account.pop("locked_until", None)
+            return {"status": "ok", "account": account}
+
+    def authenticate(self, account_id, pin):
+        auth_result = self.authenticate_with_status(account_id, pin)
+        if auth_result.get("status") != "ok":
+            return None
+        return auth_result.get("account")
 
     def get_balance(self, account_id):
         query = f"SELECT balance FROM {self.table_name} WHERE account_id=%s"

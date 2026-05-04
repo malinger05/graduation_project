@@ -4,6 +4,13 @@
 <section class="card">
   <h1>Welcome</h1>
   <p class="muted">Enter your account number and PIN.</p>
+  {% if remaining_lock_seconds and remaining_lock_seconds > 0 %}
+  <div class="lockout-box" data-remaining-seconds="{{ remaining_lock_seconds }}">
+    <p class="lockout-label">Account lockout active</p>
+    <p class="lockout-time" id="lockout-timer">00:00</p>
+    <p class="lockout-note">You can retry login when this timer reaches 00:00.</p>
+  </div>
+  {% endif %}
   <form method="post" action="{{ url_for('login') }}" class="stack">
     <label>
       Account number
@@ -16,4 +23,31 @@
     <button type="submit" class="btn primary">Sign in</button>
   </form>
 </section>
+{% if remaining_lock_seconds and remaining_lock_seconds > 0 %}
+<script>
+  (function() {
+    const lockoutBox = document.querySelector(".lockout-box");
+    const timerEl = document.getElementById("lockout-timer");
+    if (!lockoutBox || !timerEl) return;
+
+    let remaining = parseInt(lockoutBox.dataset.remainingSeconds || "0", 10);
+    if (Number.isNaN(remaining)) remaining = 0;
+
+    function format(seconds) {
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+    }
+
+    function tick() {
+      timerEl.textContent = format(Math.max(remaining, 0));
+      if (remaining <= 0) return;
+      remaining -= 1;
+      window.setTimeout(tick, 1000);
+    }
+
+    tick();
+  })();
+</script>
+{% endif %}
 {% endblock %}
