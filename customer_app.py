@@ -1,7 +1,7 @@
 """
-Minimal web UI for ATM customers: login, balance, withdraw, deposit, recent activity.
-Run: python customer_app.py   or   flask --app customer_app run
-Requires the same .env as atm.py (blockchain + DB + contract settings).
+customer_app.py  —  Layer 1
+Flask web UI. Talks only to middleware (Layer 2).
+No blockchain. No PostgreSQL. No Spring Boot calls.
 """
 import os
 import io
@@ -16,34 +16,18 @@ from secrets_manager import get_secret
 
 load_dotenv()
 
-from atm_architecture import (
-    ACCOUNTS_DATABASE_URL,
-    ACCOUNTS_TABLE,
-    DATABASE_URL,
-    INDEXER_INTERVAL_SECONDS,
-    ATMApp,
-    AccountsRepository,
-    BlockchainGateway,
-    Indexer,
-    TransactionsRepository,
-)
+from atm_architecture import ATMApp, make_accounts_repo
 
 app = Flask(__name__)
-app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
+app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me")
 
-_atm = None
 _atm_lock = threading.Lock()
-# Serialize operations on the shared ATM instance (simple local demo; not multi-tenant safe).
-atm_ops_lock = threading.Lock()
+_atm: ATMApp | None = None
 
 
-def build_qr_data_uri(content):
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=8,
-        border=2,
-    )
+def build_qr_data_uri(content: str) -> str:
+    qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L,
+                        box_size=8, border=2)
     qr.add_data(content)
     qr.make(fit=True)
     image = qr.make_image(fill_color="black", back_color="white")
@@ -53,22 +37,12 @@ def build_qr_data_uri(content):
     return f"data:image/png;base64,{encoded}"
 
 
-def ensure_atm():
+def get_atm() -> ATMApp:
     global _atm
     with _atm_lock:
         if _atm is None:
-            accounts_repo = AccountsRepository(ACCOUNTS_DATABASE_URL, ACCOUNTS_TABLE)
-            transactions_repo = TransactionsRepository(DATABASE_URL)
-            blockchain = BlockchainGateway()
-            indexer = Indexer(transactions_repo, blockchain)
-            _atm = ATMApp(accounts_repo, transactions_repo, blockchain, indexer)
-            thread = threading.Thread(
-                target=indexer.run_forever,
-                kwargs={"interval_seconds": INDEXER_INTERVAL_SECONDS},
-                daemon=True,
-            )
-            thread.start()
-        return _atm
+            _atm = ATMApp(make_accounts_repo())
+    return _atm
 
 
 def login_required(view):
@@ -77,27 +51,12 @@ def login_required(view):
         if not session.get("account"):
             return redirect(url_for("login"))
         return view(*args, **kwargs)
-
     return wrapped
-
-
-def bind_session_user(atm):
-    acc = session["account"]
-    user = atm.accounts_repo.get_account(acc)
-    if not user:
-        session.clear()
-        flash("Session invalid. Please sign in again.")
-        return redirect(url_for("login"))
-    atm.current_account = acc
-    session["full_name"] = user.get("name", session.get("full_name", "Customer"))
-    return None
 
 
 @app.route("/")
 def index():
-    if session.get("account"):
-        return redirect(url_for("dashboard"))
-    return redirect(url_for("login"))
+    return redirect(url_for("dashboard") if session.get("account") else url_for("login"))
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -107,63 +66,85 @@ def login():
 
     account = (request.form.get("account") or "").strip()
     pin = (request.form.get("pin") or "").strip()
+
     if not account or not pin:
         flash("Enter account number and PIN.")
         return render_template("login.html")
 
     try:
-        with atm_ops_lock:
-            atm = ensure_atm()
-            user = atm.accounts_repo.authenticate(account, pin)
+        # Fresh ATM instance per login so session token is isolated
+        atm = ATMApp(make_accounts_repo())
+        success = atm.authenticate(account, pin)
+    except RuntimeError as e:
+        return render_template("config_error.html", error=str(e)), 503
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 
-    if not user:
+    if not success:
         flash("Invalid account number or PIN.")
         return render_template("login.html")
 
+    # Store ATM instance in a thread-local way via session ID
+    import secrets as _s
+    atm_key = _s.token_hex(8)
+    _atm_sessions[atm_key] = atm
+
     session["account"] = account
-    session["full_name"] = user.get("name", "Customer")
-    session["user_id"] = user.get("account_id", account)
+    session["full_name"] = atm.accounts_repo.get_account(account).get("name", "Customer")
+    session["atm_key"] = atm_key
     return redirect(url_for("dashboard"))
+
+
+# Per-session ATM instances (each has its own middleware session token)
+_atm_sessions: dict[str, ATMApp] = {}
+
+
+def get_session_atm() -> ATMApp | None:
+    key = session.get("atm_key")
+    if not key:
+        return None
+    return _atm_sessions.get(key)
 
 
 @app.route("/logout", methods=["POST"])
 def logout():
+    key = session.get("atm_key")
+    if key:
+        _atm_sessions.pop(key, None)
     session.clear()
     flash("You are signed out.")
     return redirect(url_for("login"))
 
 
-@app.route("/dashboard", methods=["GET"])
+@app.route("/dashboard")
 @login_required
 def dashboard():
+    atm = get_session_atm()
+    if not atm:
+        session.clear()
+        return redirect(url_for("login"))
+
     try:
-        with atm_ops_lock:
-            atm = ensure_atm()
-            redir = bind_session_user(atm)
-            if redir:
-                return redir
-            balance = atm.check_balance()
-            recent = [
-                {
-                    "type": t.get("type", ""),
-                    "amount": float(t.get("amount", 0) or 0),
-                    "timestamp": str(t.get("created_at", "")),
-                }
-                for t in atm.transactions_repo.get_transactions_for_account(session["account"], 10)
-            ]
-            recent.reverse()
+        balance = atm.check_balance()
+        recent = atm.get_transactions()
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 
     qr_popup = session.pop("qr_popup", None)
     last_qr = session.get("last_qr")
+
     return render_template(
         "dashboard.html",
         full_name=session.get("full_name", "Customer"),
         balance=balance,
-        recent=recent,
+        recent=[
+            {
+                "type": t.get("type", ""),
+                "amount": float(t.get("amount", 0) or 0),
+                "timestamp": str(t.get("created_at", "")),
+            }
+            for t in (recent or [])
+        ],
         qr_popup=qr_popup,
         last_qr=last_qr,
     )
@@ -172,6 +153,10 @@ def dashboard():
 @app.route("/withdraw", methods=["POST"])
 @login_required
 def withdraw():
+    atm = get_session_atm()
+    if not atm:
+        return redirect(url_for("login"))
+
     try:
         amount = float(request.form.get("amount") or 0)
     except ValueError:
@@ -179,27 +164,21 @@ def withdraw():
         return redirect(url_for("dashboard"))
 
     try:
-        with atm_ops_lock:
-            atm = ensure_atm()
-            redir = bind_session_user(atm)
-            if redir:
-                return redir
-            ok, msg, _on_chain = atm.withdraw(amount)
-            if ok:
-                txn = atm.transactions_repo.get_latest_transaction_for_account(session["account"])
-                tx_hash = txn.get("blockchain_tx") if txn else None
-                if tx_hash:
-                    verify_url = f"https://sepolia.etherscan.io/tx/{tx_hash}"
-                    qr_payload = {
-                        "type": txn.get("type", ""),
-                        "amount": float(txn.get("amount", 0) or 0),
-                        "verify_url": verify_url,
-                        "qr_data_uri": build_qr_data_uri(verify_url),
-                    }
-                    session["qr_popup"] = qr_payload
-                    session["last_qr"] = qr_payload
+        ok, msg, result = atm.withdraw(amount)
+        if ok and result:
+            verify_url = result.get("verifyUrl")
+            if verify_url:
+                qr_payload = {
+                    "type": "WITHDRAW",
+                    "amount": amount,
+                    "verify_url": verify_url,
+                    "qr_data_uri": build_qr_data_uri(verify_url),
+                }
+                session["qr_popup"] = qr_payload
+                session["last_qr"] = qr_payload
     except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
+        flash(str(e))
+        return redirect(url_for("dashboard"))
 
     flash(msg)
     return redirect(url_for("dashboard"))
@@ -208,6 +187,10 @@ def withdraw():
 @app.route("/deposit", methods=["POST"])
 @login_required
 def deposit():
+    atm = get_session_atm()
+    if not atm:
+        return redirect(url_for("login"))
+
     try:
         amount = float(request.form.get("amount") or 0)
     except ValueError:
@@ -215,27 +198,21 @@ def deposit():
         return redirect(url_for("dashboard"))
 
     try:
-        with atm_ops_lock:
-            atm = ensure_atm()
-            redir = bind_session_user(atm)
-            if redir:
-                return redir
-            ok, msg, _on_chain = atm.deposit(amount)
-            if ok:
-                txn = atm.transactions_repo.get_latest_transaction_for_account(session["account"])
-                tx_hash = txn.get("blockchain_tx") if txn else None
-                if tx_hash:
-                    verify_url = f"https://sepolia.etherscan.io/tx/{tx_hash}"
-                    qr_payload = {
-                        "type": txn.get("type", ""),
-                        "amount": float(txn.get("amount", 0) or 0),
-                        "verify_url": verify_url,
-                        "qr_data_uri": build_qr_data_uri(verify_url),
-                    }
-                    session["qr_popup"] = qr_payload
-                    session["last_qr"] = qr_payload
+        ok, msg, result = atm.deposit(amount)
+        if ok and result:
+            verify_url = result.get("verifyUrl")
+            if verify_url:
+                qr_payload = {
+                    "type": "DEPOSIT",
+                    "amount": amount,
+                    "verify_url": verify_url,
+                    "qr_data_uri": build_qr_data_uri(verify_url),
+                }
+                session["qr_popup"] = qr_payload
+                session["last_qr"] = qr_payload
     except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
+        flash(str(e))
+        return redirect(url_for("dashboard"))
 
     flash(msg)
     return redirect(url_for("dashboard"))
