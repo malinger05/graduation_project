@@ -1,28 +1,40 @@
 import base64
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError, VerifyMismatchError
+from argon2.low_level import Type as Argon2Type
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-DB_FILE = "secure_users.db"
-KEY_FILE = "user_db_aes256.key"
+DB_FILE = os.environ.get("ATM_SECURE_USER_DB", "secure_users.db").strip() or "secure_users.db"
+KEY_FILE = os.environ.get("ATM_SECURE_USER_KEY", "user_db_aes256.key").strip() or "user_db_aes256.key"
 
 
 class SecureUserDatabase:
-    """SQLite user database with AES-256 encryption for sensitive columns."""
+    """
+    SQLite user store: **Argon2id** for one-way secrets (PIN, fingerprint ID string),
+    **AES-256-GCM** for reversible PII (name, email, phone) so the app can display them.
+    """
 
     def __init__(self, db_path=DB_FILE, key_path=KEY_FILE):
         self.db_path = db_path
         self.key_path = key_path
-        self.password_hasher = PasswordHasher()
+        self.password_hasher = PasswordHasher(
+            time_cost=3,
+            memory_cost=65536,
+            parallelism=4,
+            hash_len=32,
+            salt_len=16,
+            type=Argon2Type.ID,
+        )
+        self.lockout_minutes = [5, 10, 15]
         self.aes_key = self._load_or_create_key()
         self._initialize_schema()
-        if self._should_seed_mock_users():
-            self.seed_mock_users()
+        # Inserts demo users (1001/1234, …) only while the table is empty.
+        self.seed_mock_users()
 
     def _load_or_create_key(self):
         if os.path.exists(self.key_path):
@@ -59,11 +71,35 @@ class SecureUserDatabase:
                     is_active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    last_login_at TEXT
+                    last_login_at TEXT,
+                    failed_attempts INTEGER NOT NULL DEFAULT 0,
+                    locked_until TEXT
                 )
                 """
             )
+            self._migrate_users_columns(conn)
             conn.commit()
+
+    @staticmethod
+    def _migrate_users_columns(conn):
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "failed_attempts" not in existing:
+            conn.execute("ALTER TABLE users ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0")
+        if "locked_until" not in existing:
+            conn.execute("ALTER TABLE users ADD COLUMN locked_until TEXT")
+
+    @staticmethod
+    def _remaining_lock_seconds(locked_until):
+        if not locked_until:
+            return 0
+        now = datetime.now(timezone.utc)
+        if isinstance(locked_until, str):
+            raw = locked_until.strip().replace("Z", "+00:00")
+            locked_until = datetime.fromisoformat(raw)
+        if getattr(locked_until, "tzinfo", None) is None:
+            locked_until = locked_until.replace(tzinfo=timezone.utc)
+        delta = (locked_until - now).total_seconds()
+        return int(delta) if delta > 0 else 0
 
     def _encrypt_value(self, plaintext):
         if plaintext is None:
@@ -110,10 +146,6 @@ class SecureUserDatabase:
             return True, None
         except (VerifyMismatchError, VerificationError):
             return False, None
-
-    @staticmethod
-    def _should_seed_mock_users():
-        return os.environ.get("ATM_SEED_MOCK_USERS", "").strip().lower() in {"1", "true", "yes", "on"}
 
     def seed_mock_users(self):
         with self._connect() as conn:
@@ -186,6 +218,157 @@ class SecureUserDatabase:
                 )
             conn.commit()
         print("✓ Seeded secure mock users in SQLite database")
+
+    def authenticate_with_status(self, account_id, pin):
+        """Same contract as ``AccountsRepository.authenticate_with_status`` (web / CLI)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT user_id, account_number, full_name_enc, balance, pin_hash, is_active,
+                       COALESCE(failed_attempts, 0), locked_until
+                FROM users
+                WHERE account_number = ?
+                """,
+                (account_id,),
+            ).fetchone()
+
+            if not row:
+                return {"status": "invalid"}
+            if row[5] != 1:
+                return {"status": "invalid"}
+
+            remaining_seconds = self._remaining_lock_seconds(row[7])
+            if remaining_seconds > 0:
+                return {
+                    "status": "locked",
+                    "remaining_lock_seconds": remaining_seconds,
+                }
+
+            stored_pin_hash = row[4]
+            if not stored_pin_hash:
+                return {"status": "invalid"}
+
+            is_valid_pin, upgraded_pin_hash = self._verify_secret(stored_pin_hash, pin)
+            if not is_valid_pin:
+                current_failed = int(row[6] or 0)
+                failed_attempts = current_failed + 1
+
+                lock_minutes = 0
+                new_locked_until = None
+                if failed_attempts % 3 == 0:
+                    lock_level = min((failed_attempts // 3), len(self.lockout_minutes))
+                    lock_minutes = self.lockout_minutes[lock_level - 1]
+                    new_locked_until = (datetime.now(timezone.utc) + timedelta(minutes=lock_minutes)).isoformat()
+
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET failed_attempts = ?, locked_until = ?
+                    WHERE account_number = ?
+                    """,
+                    (failed_attempts, new_locked_until, account_id),
+                )
+
+                if lock_minutes:
+                    return {
+                        "status": "locked",
+                        "remaining_lock_seconds": lock_minutes * 60,
+                        "lock_minutes": lock_minutes,
+                    }
+
+                attempts_to_next_lock = 3 - (failed_attempts % 3)
+                return {
+                    "status": "invalid",
+                    "attempts_to_next_lock": attempts_to_next_lock,
+                }
+
+            if upgraded_pin_hash:
+                conn.execute(
+                    "UPDATE users SET pin_hash = ? WHERE account_number = ?",
+                    (upgraded_pin_hash, account_id),
+                )
+            conn.execute(
+                """
+                UPDATE users
+                SET failed_attempts = 0, locked_until = NULL
+                WHERE account_number = ?
+                """,
+                (account_id,),
+            )
+
+            account = {
+                "account_id": row[1],
+                "name": self._decrypt_value(row[2]),
+                "balance": float(row[3]),
+            }
+            return {"status": "ok", "account": account}
+
+    def authenticate(self, account_id, pin):
+        auth_result = self.authenticate_with_status(account_id, pin)
+        if auth_result.get("status") != "ok":
+            return None
+        return auth_result.get("account")
+
+    def get_balance(self, account_id):
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT balance FROM users WHERE account_number = ? AND is_active = 1",
+                (account_id,),
+            ).fetchone()
+            return float(row[0]) if row else 0.0
+
+    def get_account(self, account_id):
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT account_number, full_name_enc, balance
+                FROM users
+                WHERE account_number = ? AND is_active = 1
+                """,
+                (account_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "account_id": row[0],
+                "name": self._decrypt_value(row[1]),
+                "balance": float(row[2]),
+            }
+
+    def apply_balance_change(self, account_id, delta):
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT balance FROM users WHERE account_number = ? AND is_active = 1",
+                (account_id,),
+            ).fetchone()
+            if not row:
+                return None
+            old_balance = float(row[0])
+            new_balance = old_balance + float(delta)
+            if new_balance < 0:
+                return None
+            now = datetime.now().isoformat()
+            conn.execute(
+                "UPDATE users SET balance = ?, updated_at = ? WHERE account_number = ?",
+                (new_balance, now, account_id),
+            )
+            return old_balance, new_balance
+
+    def list_users_public(self):
+        """Decrypt names for admin/viewer tools (same shape as Postgres ``accounts`` listing)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT account_number, full_name_enc, balance
+                FROM users
+                WHERE is_active = 1
+                ORDER BY account_number
+                """
+            ).fetchall()
+        return [
+            {"account_id": r[0], "name": self._decrypt_value(r[1]), "balance": float(r[2])}
+            for r in rows
+        ]
 
     def verify_credentials(self, account_number, pin):
         with self._connect() as conn:

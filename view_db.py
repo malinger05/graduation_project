@@ -1,10 +1,9 @@
-import os
-import re
 from datetime import datetime
 
 from dotenv import load_dotenv
 
 from secrets_manager import get_secret
+from secure_user_db import DB_FILE, KEY_FILE, SecureUserDatabase
 
 try:
     import psycopg2
@@ -17,15 +16,6 @@ load_dotenv()
 
 _DEFAULT_DB = "postgresql://localhost:5432/atm"
 DATABASE_URL = get_secret("DATABASE_URL", _DEFAULT_DB).strip()
-ACCOUNTS_DATABASE_URL = get_secret("ACCOUNTS_DATABASE_URL", DATABASE_URL).strip()
-ACCOUNTS_TABLE = os.environ.get("ACCOUNTS_TABLE", "accounts").strip()
-_VALID_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def safe_identifier(name):
-    if not _VALID_IDENTIFIER.match(name):
-        raise ValueError(f"Invalid SQL identifier: {name}")
-    return name
 
 
 def format_cell(value):
@@ -57,16 +47,7 @@ def print_table(title, rows, columns):
 
 
 def fetch_accounts():
-    conn = psycopg2.connect(ACCOUNTS_DATABASE_URL)
-    conn.autocommit = True
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            table = safe_identifier(ACCOUNTS_TABLE)
-            query = f"SELECT account_id, name, balance FROM {table} ORDER BY account_id"
-            cur.execute(query)
-            return cur.fetchall()
-    finally:
-        conn.close()
+    return SecureUserDatabase().list_users_public()
 
 
 def fetch_transactions(limit=30):
@@ -76,7 +57,7 @@ def fetch_transactions(limit=30):
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT id, account_id, type, amount, status, block_number, created_at, confirmed_at
+                SELECT id, account_id, type, amount, status, blockchain_tx, block_number, created_at, confirmed_at
                 FROM transactions
                 ORDER BY id DESC
                 LIMIT %s
@@ -90,9 +71,8 @@ def fetch_transactions(limit=30):
 
 def main():
     print("DB Viewer")
+    print(f"Users (SQLite):  {DB_FILE}  (key: {KEY_FILE})")
     print(f"Transactions DB: {DATABASE_URL}")
-    print(f"Accounts DB:     {ACCOUNTS_DATABASE_URL}")
-    print(f"Accounts table:  {ACCOUNTS_TABLE}")
 
     try:
         accounts = fetch_accounts()
@@ -105,7 +85,17 @@ def main():
         print_table(
             "Latest Transactions (30)",
             transactions,
-            ["id", "account_id", "type", "amount", "status", "block_number", "created_at", "confirmed_at"],
+            [
+                "id",
+                "account_id",
+                "type",
+                "amount",
+                "status",
+                "blockchain_tx",
+                "block_number",
+                "created_at",
+                "confirmed_at",
+            ],
         )
     except Exception as exc:
         print(f"\nCould not load transactions: {exc}")

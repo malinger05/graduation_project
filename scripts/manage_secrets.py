@@ -17,7 +17,6 @@ def parse_args():
             "CONTRACT_ADDRESS",
             "ETH_PRIVATE_KEY",
             "DATABASE_URL",
-            "ACCOUNTS_DATABASE_URL",
             "FLASK_SECRET_KEY",
         ],
         help="Secret name",

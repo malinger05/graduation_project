@@ -17,15 +17,13 @@ from secrets_manager import get_secret
 load_dotenv()
 
 from atm_architecture import (
-    ACCOUNTS_DATABASE_URL,
-    ACCOUNTS_TABLE,
     DATABASE_URL,
     ATMApp,
-    AccountsRepository,
     BlockchainGateway,
     Indexer,
     TransactionsRepository,
 )
+from secure_user_db import SecureUserDatabase
 
 app = Flask(__name__)
 app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
@@ -62,7 +60,7 @@ def ensure_atm():
     global _atm
     with _atm_lock:
         if _atm is None:
-            accounts_repo = AccountsRepository(ACCOUNTS_DATABASE_URL, ACCOUNTS_TABLE)
+            accounts_repo = SecureUserDatabase()
             transactions_repo = TransactionsRepository(DATABASE_URL)
             blockchain = BlockchainGateway()
             indexer = Indexer(transactions_repo, blockchain)

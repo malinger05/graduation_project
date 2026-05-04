@@ -12,6 +12,7 @@ import requests
 from argon2 import PasswordHasher  # type: ignore[reportMissingImports]
 from argon2.exceptions import VerificationError, VerifyMismatchError  # type: ignore[reportMissingImports]
 from secrets_manager import get_secret
+from secure_user_db import SecureUserDatabase
 
 # Python 3.11+ removed inspect.getargspec, but older web3 dependency chains
 # still import it indirectly (via parsimonious). Keep a compatibility alias.
@@ -32,8 +33,6 @@ load_dotenv()
 
 DEFAULT_TX_DATABASE_URL = "postgresql://localhost:5432/atm"
 DATABASE_URL = get_secret("DATABASE_URL", DEFAULT_TX_DATABASE_URL).strip()
-ACCOUNTS_DATABASE_URL = get_secret("ACCOUNTS_DATABASE_URL", DATABASE_URL).strip()
-ACCOUNTS_TABLE = os.environ.get("ACCOUNTS_TABLE", "accounts").strip()
 
 CONTRACT_ADDRESS = get_secret("CONTRACT_ADDRESS", "").strip()
 ETH_PRIVATE_KEY = get_secret("ETH_PRIVATE_KEY", "").strip()
@@ -338,6 +337,121 @@ class TransactionsRepository:
             raise
         finally:
             self.conn.autocommit = previous_autocommit
+
+    def _delete_transaction_by_id(self, tx_id):
+        """Remove a row after a failed cross-store follow-up (best-effort)."""
+        prev = self.conn.autocommit
+        self.conn.autocommit = True
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("DELETE FROM transactions WHERE id = %s", (tx_id,))
+        finally:
+            self.conn.autocommit = prev
+
+    def create_local_transaction_atomic_secure(
+        self, secure_db, account_id, tx_type, amount, created_at
+    ):
+        """
+        Insert the transaction in PostgreSQL first, then update SQLite under ``BEGIN IMMEDIATE``.
+        If Postgres fails, the SQLite row lock is released without a balance change. If SQLite
+        fails after Postgres commits, the orphan PG row is deleted so balances stay consistent.
+        """
+        previous_autocommit = self.conn.autocommit
+        self.conn.autocommit = False
+        sqlite_conn = None
+        pg_committed_id = None
+        try:
+            sqlite_conn = secure_db._connect()
+            sqlite_conn.execute("BEGIN IMMEDIATE")
+            row = sqlite_conn.execute(
+                """
+                SELECT balance FROM users
+                WHERE account_number = ? AND is_active = 1
+                """,
+                (account_id,),
+            ).fetchone()
+            if not row:
+                sqlite_conn.rollback()
+                self.conn.rollback()
+                return None, "Account not found."
+
+            old_balance = float(row[0])
+            delta = -float(amount) if tx_type == "WITHDRAW" else float(amount)
+            new_balance = old_balance + delta
+            if new_balance < 0:
+                sqlite_conn.rollback()
+                self.conn.rollback()
+                return None, "Insufficient funds"
+
+            payload = {
+                "account_id": account_id,
+                "type": tx_type,
+                "amount": float(amount),
+                "old_balance": old_balance,
+                "new_balance": new_balance,
+                "created_at": created_at,
+            }
+            payload["canonical_hash"] = canonical_hash(payload)
+            operation_key = f"{account_id}:{payload['canonical_hash']}"
+
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    INSERT INTO transactions (
+                        account_id, type, amount, old_balance, new_balance,
+                        status, canonical_hash, blockchain_tx, created_at,
+                        operation_key, retry_count, next_retry_at
+                    ) VALUES (%s,%s,%s,%s,%s,'initiated',%s,NULL,%s,%s,0,NOW())
+                    RETURNING id, account_id, type, amount, old_balance, new_balance, created_at, canonical_hash, status
+                    """,
+                    (
+                        payload["account_id"],
+                        payload["type"],
+                        payload["amount"],
+                        payload["old_balance"],
+                        payload["new_balance"],
+                        payload["canonical_hash"],
+                        payload["created_at"],
+                        operation_key,
+                    ),
+                )
+                local_tx = cur.fetchone()
+            self.conn.commit()
+            pg_committed_id = local_tx["id"]
+
+            now = datetime.now().isoformat()
+            sqlite_conn.execute(
+                """
+                UPDATE users SET balance = ?, updated_at = ?
+                WHERE account_number = ? AND is_active = 1
+                """,
+                (new_balance, now, account_id),
+            )
+            sqlite_conn.commit()
+            return local_tx, ""
+        except Exception:
+            if sqlite_conn:
+                try:
+                    sqlite_conn.rollback()
+                except Exception:
+                    pass
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            if pg_committed_id is not None:
+                try:
+                    self._delete_transaction_by_id(pg_committed_id)
+                except Exception:
+                    pass
+            raise
+        finally:
+            self.conn.autocommit = previous_autocommit
+            if sqlite_conn:
+                try:
+                    sqlite_conn.close()
+                except Exception:
+                    pass
 
     def create_transaction(self, data):
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -688,13 +802,18 @@ class ATMApp:
             if self.accounts_repo.conn.dsn != self.transactions_repo.conn.dsn:
                 return (
                     False,
-                    "Atomic mode requires ACCOUNTS_DATABASE_URL and DATABASE_URL to point to the same PostgreSQL database.",
+                    "Atomic mode requires the accounts and transactions repositories to use the same PostgreSQL database.",
                     False,
                 )
         created_at = now_iso()
-        local_tx, err = self.transactions_repo.create_local_transaction_atomic(
-            self.accounts_repo.table_name, self.current_account, tx_type, float(amount), created_at
-        )
+        if isinstance(self.accounts_repo, SecureUserDatabase):
+            local_tx, err = self.transactions_repo.create_local_transaction_atomic_secure(
+                self.accounts_repo, self.current_account, tx_type, float(amount), created_at
+            )
+        else:
+            local_tx, err = self.transactions_repo.create_local_transaction_atomic(
+                self.accounts_repo.table_name, self.current_account, tx_type, float(amount), created_at
+            )
         if not local_tx:
             return False, err or "Unable to create local transaction", False
 
@@ -722,8 +841,6 @@ class ATMApp:
         return self._record("DEPOSIT", amount) if amount > 0 else (False, "Amount must be positive", False)
 
     def verify_integrity(self, txn):
-        if txn["status"] == "pending":
-            return False, "Pending confirmation"
         created_at = txn["created_at"]
         if hasattr(created_at, "astimezone"):
             created_at = created_at.astimezone(timezone.utc).isoformat()
@@ -743,13 +860,15 @@ class ATMApp:
         )
         if expected != txn["canonical_hash"]:
             return False, "Tampered locally: canonical hash mismatch"
+        if txn["status"] != "confirmed":
+            return False, f"Not finalized (status={txn['status']})"
+        if not txn.get("blockchain_tx"):
+            return False, "Missing chain transaction reference"
         on_chain_hash = self.blockchain.decode_stored_hash_from_tx(txn["blockchain_tx"])
         if on_chain_hash != txn["canonical_hash"]:
             return False, "Tampered: on-chain hash differs"
         if not self.blockchain.verify_hash_in_contract(txn["canonical_hash"]):
             return False, "Not found in contract"
-        if txn["status"] != "confirmed":
-            return False, f"Not finalized (status={txn['status']})"
         return True, "Authentic and confirmed"
 
     def export_audit_report(self):
@@ -811,7 +930,7 @@ def main():
     if psycopg2 is None:
         raise RuntimeError("psycopg2 is not installed. Run: pip install psycopg2-binary")
 
-    accounts_repo = AccountsRepository(ACCOUNTS_DATABASE_URL, ACCOUNTS_TABLE)
+    accounts_repo = SecureUserDatabase()
     transactions_repo = TransactionsRepository(DATABASE_URL)
     blockchain = BlockchainGateway()
     indexer = Indexer(transactions_repo, blockchain)

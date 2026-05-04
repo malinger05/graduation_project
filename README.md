@@ -7,7 +7,7 @@ This ATM project writes transaction integrity hashes to Ethereum Sepolia, stores
 - **Blockchain (Sepolia)**: immutable integrity log (`storeLog` / `verifyLog`).
 - **Indexer worker** (`worker.py`): submission retries, on-chain confirmation sync, and tamper monitoring (runs in a separate process from the web UI).
 - **PostgreSQL transactions DB**: ATM transactions and statuses.
-- **PostgreSQL accounts DB**: account credentials and balances.
+- **SQLite users DB** (`secure_user_db.py`): customer credentials, encrypted PII fields, and balances. Paths: `ATM_SECURE_USER_DB` / `ATM_SECURE_USER_KEY` in `.env` (defaults: `secure_users.db`, `user_db_aes256.key`).
 
 ## Recent updates
 
@@ -45,7 +45,6 @@ Store sensitive values in the OS keychain (they are **not** read from `.env`):
 python3 scripts/manage_secrets.py set CONTRACT_ADDRESS
 python3 scripts/manage_secrets.py set ETH_PRIVATE_KEY
 python3 scripts/manage_secrets.py set DATABASE_URL
-python3 scripts/manage_secrets.py set ACCOUNTS_DATABASE_URL
 python3 scripts/manage_secrets.py set FLASK_SECRET_KEY
 ```
 
@@ -55,10 +54,9 @@ python3 scripts/manage_secrets.py set FLASK_SECRET_KEY
 cp .env.example .env
 ```
 
-Edit `.env` for options such as RPC URLs, `ACCOUNTS_TABLE`, indexer interval, and optional `PORT`. Example:
+Edit `.env` for options such as RPC URLs, SQLite user DB paths, indexer interval, and optional `PORT`. Example:
 
 ```env
-ACCOUNTS_TABLE=accounts
 ETH_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
 ETH_RPC_FALLBACK_URLS=https://sepolia.drpc.org,https://1rpc.io/sepolia
 INDEXER_INTERVAL_SECONDS=3
@@ -71,11 +69,12 @@ Keep `.env` local and out of version control.
 
 ## 4) Prepare the database
 
-Restore or attach the PostgreSQL data your team uses for accounts + transactions. Point the keychain entries `DATABASE_URL` and `ACCOUNTS_DATABASE_URL` at that instance, and set `ACCOUNTS_TABLE` in `.env` if it is not `accounts`.
+1. **PostgreSQL (transactions only):** set `DATABASE_URL` in the keychain to a database the app can reach. The worker and web app create/update the `transactions` table there on startup.
+
+2. **SQLite (users):** the first time `users` is empty, the app inserts demo accounts (`1001` / PIN `1234`, `1002` / `5678`, `1003` / `9012`). Keep `user_db_aes256.key` with `secure_users.db`; without the key, encrypted fields cannot be decrypted.
 
 ```bash
 python3 scripts/manage_secrets.py set DATABASE_URL
-python3 scripts/manage_secrets.py set ACCOUNTS_DATABASE_URL
 ```
 
 ## 5) Run the application
@@ -119,7 +118,7 @@ python3 -m pytest tests/
 
 ### Optional: inspect the database
 
-`view_db.py` uses the same keychain-backed `DATABASE_URL` / `ACCOUNTS_DATABASE_URL` as the app:
+`view_db.py` lists users from SQLite (`secure_user_db`) and recent rows from keychain-backed `DATABASE_URL`:
 
 ```bash
 python3 view_db.py
@@ -127,7 +126,7 @@ python3 view_db.py
 
 ## 6) Log in
 
-Use credentials that exist in your restored `accounts` table.
+Use credentials that exist in the SQLite `users` table (demo users are added automatically when the table was empty on first startup, or add rows yourself).
 
 ## 7) Expected behavior
 
