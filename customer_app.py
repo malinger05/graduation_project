@@ -1,7 +1,7 @@
 """
-Minimal web UI for ATM customers: login, balance, withdraw, deposit, recent activity.
-Run: python customer_app.py   or   flask --app customer_app run
-Run worker.py separately for background indexer tasks.
+customer_app.py  —  Layer 1
+Flask web UI. Talks ONLY to middleware (Layer 2).
+No PostgreSQL. No blockchain. No Spring Boot calls.
 """
 import os
 import io
@@ -17,22 +17,17 @@ from secrets_manager import get_secret
 load_dotenv()
 
 from atm_architecture import (
-    ACCOUNTS_DATABASE_URL,
-    ACCOUNTS_TABLE,
-    DATABASE_URL,
+    MIDDLEWARE_URL,
     ATMApp,
     AccountsRepository,
-    BlockchainGateway,
-    Indexer,
     TransactionsRepository,
 )
 
 app = Flask(__name__)
 app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
 
-_atm = None
-_atm_lock = threading.Lock()
-# Serialize operations on the shared ATM instance (simple local demo; not multi-tenant safe).
+# Per-session ATM instances — each login gets its own middleware session token
+_atm_sessions: dict[str, ATMApp] = {}
 atm_ops_lock = threading.Lock()
 
 
@@ -58,16 +53,11 @@ def build_qr_data_uri(content):
     return f"data:image/png;base64,{encoded}"
 
 
-def ensure_atm():
-    global _atm
-    with _atm_lock:
-        if _atm is None:
-            accounts_repo = AccountsRepository(ACCOUNTS_DATABASE_URL, ACCOUNTS_TABLE)
-            transactions_repo = TransactionsRepository(DATABASE_URL)
-            blockchain = BlockchainGateway()
-            indexer = Indexer(transactions_repo, blockchain)
-            _atm = ATMApp(accounts_repo, transactions_repo, blockchain, indexer)
-        return _atm
+def get_session_atm() -> ATMApp | None:
+    key = session.get("atm_key")
+    if not key:
+        return None
+    return _atm_sessions.get(key)
 
 
 def login_required(view):
@@ -76,20 +66,25 @@ def login_required(view):
         if not session.get("account"):
             return redirect(url_for("login"))
         return view(*args, **kwargs)
-
     return wrapped
 
 
-def bind_session_user(atm):
-    acc = session["account"]
-    user = atm.accounts_repo.get_account(acc)
-    if not user:
-        session.clear()
-        flash("Session invalid. Please sign in again.")
-        return redirect(url_for("login"))
-    atm.current_account = acc
-    session["full_name"] = user.get("name", session.get("full_name", "Customer"))
-    return None
+def _attach_qr(txn):
+    """Build QR payload from a transaction and store in Flask session."""
+    if not txn:
+        return
+    tx_hash = txn.get("blockchain_tx") or txn.get("blockchainTx")
+    if not tx_hash:
+        return
+    verify_url = f"https://sepolia.etherscan.io/tx/{tx_hash}"
+    qr_payload = {
+        "type": txn.get("type", ""),
+        "amount": float(txn.get("amount", 0) or 0),
+        "verify_url": verify_url,
+        "qr_data_uri": build_qr_data_uri(verify_url),
+    }
+    session["qr_popup"] = qr_payload
+    session["last_qr"] = qr_payload
 
 
 @app.route("/")
@@ -111,20 +106,23 @@ def login():
         return render_template("login.html", remaining_lock_seconds=0)
 
     try:
-        with atm_ops_lock:
-            atm = ensure_atm()
-            auth_result = atm.accounts_repo.authenticate_with_status(account, pin)
+        # Fresh per-session repo and ATM instance
+        accounts_repo = AccountsRepository(MIDDLEWARE_URL)
+        auth_result = accounts_repo.authenticate_with_status(account, pin)
+    except RuntimeError as e:
+        return render_template("config_error.html", error=str(e)), 503
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 
     auth_status = auth_result.get("status")
+
     if auth_status == "locked":
         remaining_seconds = int(auth_result.get("remaining_lock_seconds", 0) or 0)
         remaining = format_remaining_lock_time(remaining_seconds)
         if auth_result.get("lock_minutes"):
             flash(
-                f"Too many failed attempts. Account is locked for {auth_result['lock_minutes']} minutes. "
-                f"Try again in {remaining}."
+                f"Too many failed attempts. Account is locked for "
+                f"{auth_result['lock_minutes']} minutes. Try again in {remaining}."
             )
         else:
             flash(f"Account is locked. Try again in {remaining}.")
@@ -134,21 +132,34 @@ def login():
         attempts_to_next_lock = auth_result.get("attempts_to_next_lock")
         if attempts_to_next_lock:
             flash(
-                f"Invalid account number or PIN. {attempts_to_next_lock} attempt(s) left before lockout."
+                f"Invalid account number or PIN. "
+                f"{attempts_to_next_lock} attempt(s) left before lockout."
             )
         else:
             flash("Invalid account number or PIN.")
         return render_template("login.html", remaining_lock_seconds=0)
 
+    # Login successful — create per-session ATM instance
+    import secrets as _s
+    atm_key = _s.token_hex(8)
+    transactions_repo = TransactionsRepository(accounts_repo)
+    atm = ATMApp(accounts_repo, transactions_repo)
+    atm.current_account = account
+    _atm_sessions[atm_key] = atm
+
     user = auth_result["account"]
     session["account"] = account
     session["full_name"] = user.get("name", "Customer")
     session["user_id"] = user.get("account_id", account)
+    session["atm_key"] = atm_key
     return redirect(url_for("dashboard"))
 
 
 @app.route("/logout", methods=["POST"])
 def logout():
+    key = session.get("atm_key")
+    if key:
+        _atm_sessions.pop(key, None)
     session.clear()
     flash("You are signed out.")
     return redirect(url_for("login"))
@@ -157,23 +168,22 @@ def logout():
 @app.route("/dashboard", methods=["GET"])
 @login_required
 def dashboard():
+    atm = get_session_atm()
+    if not atm:
+        session.clear()
+        return redirect(url_for("login"))
+
     try:
-        with atm_ops_lock:
-            atm = ensure_atm()
-            redir = bind_session_user(atm)
-            if redir:
-                return redir
-            balance = atm.check_balance()
-            recent = [
-                {
-                    "type": t.get("type", ""),
-                    "amount": float(t.get("amount", 0) or 0),
-                    "timestamp": str(t.get("created_at", "")),
-                    "status": t.get("status", "unknown"),
-                }
-                for t in atm.transactions_repo.get_transactions_for_account(session["account"], 10)
-            ]
-            recent.reverse()
+        balance = atm.check_balance()
+        recent = [
+            {
+                "type": t.get("type", ""),
+                "amount": float(t.get("amount", 0) or 0),
+                "timestamp": str(t.get("created_at", "")),
+                "status": t.get("status", "unknown"),
+            }
+            for t in atm.transactions_repo.get_transactions_for_account(session["account"], 10)
+        ]
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 
@@ -198,26 +208,15 @@ def withdraw():
         flash("Enter a valid amount.")
         return redirect(url_for("dashboard"))
 
+    atm = get_session_atm()
+    if not atm:
+        return redirect(url_for("login"))
+
     try:
-        with atm_ops_lock:
-            atm = ensure_atm()
-            redir = bind_session_user(atm)
-            if redir:
-                return redir
-            ok, msg, _on_chain = atm.withdraw(amount)
-            if ok:
-                txn = atm.transactions_repo.get_latest_transaction_for_account(session["account"])
-                tx_hash = txn.get("blockchain_tx") if txn else None
-                if tx_hash:
-                    verify_url = f"https://sepolia.etherscan.io/tx/{tx_hash}"
-                    qr_payload = {
-                        "type": txn.get("type", ""),
-                        "amount": float(txn.get("amount", 0) or 0),
-                        "verify_url": verify_url,
-                        "qr_data_uri": build_qr_data_uri(verify_url),
-                    }
-                    session["qr_popup"] = qr_payload
-                    session["last_qr"] = qr_payload
+        ok, msg, _ = atm.withdraw(amount)
+        if ok:
+            txn = atm.transactions_repo.get_latest_transaction_for_account(session["account"])
+            _attach_qr(txn)
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 
@@ -234,26 +233,15 @@ def deposit():
         flash("Enter a valid amount.")
         return redirect(url_for("dashboard"))
 
+    atm = get_session_atm()
+    if not atm:
+        return redirect(url_for("login"))
+
     try:
-        with atm_ops_lock:
-            atm = ensure_atm()
-            redir = bind_session_user(atm)
-            if redir:
-                return redir
-            ok, msg, _on_chain = atm.deposit(amount)
-            if ok:
-                txn = atm.transactions_repo.get_latest_transaction_for_account(session["account"])
-                tx_hash = txn.get("blockchain_tx") if txn else None
-                if tx_hash:
-                    verify_url = f"https://sepolia.etherscan.io/tx/{tx_hash}"
-                    qr_payload = {
-                        "type": txn.get("type", ""),
-                        "amount": float(txn.get("amount", 0) or 0),
-                        "verify_url": verify_url,
-                        "qr_data_uri": build_qr_data_uri(verify_url),
-                    }
-                    session["qr_popup"] = qr_payload
-                    session["last_qr"] = qr_payload
+        ok, msg, _ = atm.deposit(amount)
+        if ok:
+            txn = atm.transactions_repo.get_latest_transaction_for_account(session["account"])
+            _attach_qr(txn)
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 
