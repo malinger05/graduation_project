@@ -2,11 +2,17 @@
 customer_app.py  —  Layer 1
 Flask web UI. Talks ONLY to middleware (Layer 2).
 No PostgreSQL. No blockchain. No Spring Boot calls.
+
+[FIX] Per-session ATMApp instances now carry an expiry timestamp.
+      A background cleanup thread evicts sessions idle for longer than
+      ATM_SESSION_TTL_SECONDS (default: 30 minutes).
+      Logout removes the session immediately.
 """
 import os
 import io
 import base64
 import threading
+import time
 from functools import wraps
 
 from dotenv import load_dotenv
@@ -26,10 +32,90 @@ from atm_architecture import (
 app = Flask(__name__)
 app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
 
-# Per-session ATM instances — each login gets its own middleware session token
-_atm_sessions: dict[str, ATMApp] = {}
-atm_ops_lock = threading.Lock()
+# ── Per-session ATM instances ─────────────────────────────────────────────────
+#
+# CRITICAL FIX: The original _atm_sessions dict grew without bound — sessions
+# were only removed on explicit logout, so a browser that was closed without
+# logging out (or a network error mid-logout) left a dead entry forever.
+# Under sustained load this would exhaust server memory.
+#
+# Fix:
+#   - Each entry stores a last_active timestamp alongside the ATMApp instance.
+#   - _session_cleanup() runs in a daemon thread every 60s and evicts entries
+#     idle for longer than ATM_SESSION_TTL_SECONDS.
+#   - _touch_session() updates last_active on every authenticated request.
+#   - logout() and the eviction loop both call _evict_atm_session() which
+#     also sends a logout signal to the middleware so its session is cleaned up.
+# ─────────────────────────────────────────────────────────────────────────────
 
+# How long (seconds) an ATM session may be idle before eviction (default 30 min)
+ATM_SESSION_TTL_SECONDS = int(os.environ.get("ATM_SESSION_TTL_SECONDS", "1800"))
+
+# Maps atm_key → {"atm": ATMApp, "last_active": float}
+_atm_sessions: dict[str, dict] = {}
+_atm_sessions_lock = threading.Lock()
+
+
+def _evict_atm_session(atm_key: str) -> None:
+    """Remove one session entry and signal middleware to drop its session."""
+    with _atm_sessions_lock:
+        entry = _atm_sessions.pop(atm_key, None)
+    if entry:
+        try:
+            # Best-effort: tell middleware to invalidate its session token too
+            atm: ATMApp = entry["atm"]
+            client = atm.accounts_repo.client
+            if client._session_token:
+                import requests as _req
+                _req.post(
+                    f"{client.base_url}/atm/logout",
+                    headers={"x-session-token": client._session_token},
+                    timeout=5,
+                )
+        except Exception:
+            pass  # Middleware logout is best-effort; local eviction always completes
+
+
+def _session_cleanup() -> None:
+    """Daemon thread: evict idle ATM sessions every 60 seconds."""
+    while True:
+        time.sleep(60)
+        cutoff = time.time() - ATM_SESSION_TTL_SECONDS
+        with _atm_sessions_lock:
+            stale_keys = [
+                k for k, v in _atm_sessions.items()
+                if v.get("last_active", 0) < cutoff
+            ]
+        for key in stale_keys:
+            _evict_atm_session(key)
+        if stale_keys:
+            app.logger.info(f"[SessionCleanup] Evicted {len(stale_keys)} idle ATM session(s)")
+
+
+# Start the cleanup daemon at import time (before first request)
+_cleanup_thread = threading.Thread(target=_session_cleanup, daemon=True)
+_cleanup_thread.start()
+
+
+def _get_session_atm() -> ATMApp | None:
+    """Return the ATMApp for the current Flask session, updating last_active."""
+    key = session.get("atm_key")
+    if not key:
+        return None
+    with _atm_sessions_lock:
+        entry = _atm_sessions.get(key)
+        if entry:
+            entry["last_active"] = time.time()
+            return entry["atm"]
+    return None
+
+
+def _register_atm_session(atm_key: str, atm: ATMApp) -> None:
+    with _atm_sessions_lock:
+        _atm_sessions[atm_key] = {"atm": atm, "last_active": time.time()}
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def format_remaining_lock_time(total_seconds):
     seconds = max(0, int(total_seconds or 0))
@@ -51,13 +137,6 @@ def build_qr_data_uri(content):
     image.save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
-
-
-def get_session_atm() -> ATMApp | None:
-    key = session.get("atm_key")
-    if not key:
-        return None
-    return _atm_sessions.get(key)
 
 
 def login_required(view):
@@ -87,6 +166,8 @@ def _attach_qr(txn):
     session["last_qr"] = qr_payload
 
 
+# ── Routes ────────────────────────────────────────────────────────────────────
+
 @app.route("/")
 def index():
     if session.get("account"):
@@ -106,7 +187,6 @@ def login():
         return render_template("login.html", remaining_lock_seconds=0)
 
     try:
-        # Fresh per-session repo and ATM instance
         accounts_repo = AccountsRepository(MIDDLEWARE_URL)
         auth_result = accounts_repo.authenticate_with_status(account, pin)
     except RuntimeError as e:
@@ -145,7 +225,7 @@ def login():
     transactions_repo = TransactionsRepository(accounts_repo)
     atm = ATMApp(accounts_repo, transactions_repo)
     atm.current_account = account
-    _atm_sessions[atm_key] = atm
+    _register_atm_session(atm_key, atm)
 
     user = auth_result["account"]
     session["account"] = account
@@ -159,7 +239,7 @@ def login():
 def logout():
     key = session.get("atm_key")
     if key:
-        _atm_sessions.pop(key, None)
+        _evict_atm_session(key)
     session.clear()
     flash("You are signed out.")
     return redirect(url_for("login"))
@@ -168,21 +248,23 @@ def logout():
 @app.route("/dashboard", methods=["GET"])
 @login_required
 def dashboard():
-    atm = get_session_atm()
+    atm = _get_session_atm()
     if not atm:
         session.clear()
         return redirect(url_for("login"))
 
     try:
         balance = atm.check_balance()
+        raw_txns = atm.transactions_repo.get_transactions_for_account(session["account"], 10)
         recent = [
             {
-                "type": t.get("type", ""),
-                "amount": float(t.get("amount", 0) or 0),
-                "timestamp": str(t.get("created_at", "")),
-                "status": t.get("status", "unknown"),
+                # Core Banking returns camelCase — transactionType, transactionStatus, createdAt
+                "type":      t.get("transactionType") or t.get("type", ""),
+                "amount":    float(t.get("amount", 0) or 0),
+                "timestamp": str(t.get("createdAt") or t.get("created_at", "")),
+                "status":    t.get("transactionStatus") or t.get("status", "APPROVED"),
             }
-            for t in atm.transactions_repo.get_transactions_for_account(session["account"], 10)
+            for t in raw_txns
         ]
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
@@ -208,15 +290,18 @@ def withdraw():
         flash("Enter a valid amount.")
         return redirect(url_for("dashboard"))
 
-    atm = get_session_atm()
+    atm = _get_session_atm()
     if not atm:
         return redirect(url_for("login"))
 
     try:
-        ok, msg, _ = atm.withdraw(amount)
-        if ok:
-            txn = atm.transactions_repo.get_latest_transaction_for_account(session["account"])
-            _attach_qr(txn)
+        ok, msg, result = atm.accounts_repo.client.withdraw(amount)
+        if ok and isinstance(result, dict):
+            _attach_qr({
+                "type":          "WITHDRAW",
+                "amount":        amount,
+                "blockchain_tx": result.get("blockchainTx"),
+            })
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 
@@ -233,15 +318,18 @@ def deposit():
         flash("Enter a valid amount.")
         return redirect(url_for("dashboard"))
 
-    atm = get_session_atm()
+    atm = _get_session_atm()
     if not atm:
         return redirect(url_for("login"))
 
     try:
-        ok, msg, _ = atm.deposit(amount)
-        if ok:
-            txn = atm.transactions_repo.get_latest_transaction_for_account(session["account"])
-            _attach_qr(txn)
+        ok, msg, result = atm.accounts_repo.client.deposit(amount)
+        if ok and isinstance(result, dict):
+            _attach_qr({
+                "type":          "DEPOSIT",
+                "amount":        amount,
+                "blockchain_tx": result.get("blockchainTx"),
+            })
     except Exception as e:
         return render_template("config_error.html", error=str(e)), 503
 
@@ -250,5 +338,5 @@ def deposit():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
+    port = int(os.environ.get("PORT", "5001"))
     app.run(host="0.0.0.0", port=port, debug=False)
