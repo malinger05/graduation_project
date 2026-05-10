@@ -143,3 +143,62 @@ Integrity verification checks:
 2. Hash decoded from blockchain transaction input equals DB hash.
 3. Contract lookup confirms hash exists.
 4. Transaction status is confirmed by the indexer.
+
+## 8) Production TLS termination + HSTS (deployment-side)
+
+For production, run Flask behind a reverse proxy with HTTPS termination.
+
+### 8.1 App process (Gunicorn)
+
+Install deps and run the app locally on loopback only:
+
+```bash
+source atm_venv/bin/activate
+pip install -r requirements.txt
+gunicorn -w 3 -b 127.0.0.1:8000 customer_app:app
+```
+
+### 8.2 Reverse proxy (Nginx + Let's Encrypt)
+
+Use `deploy/nginx/atm.conf` as a template:
+
+- HTTP (`:80`) redirects to HTTPS (`:443`)
+- TLS is terminated at Nginx
+- traffic is proxied to `127.0.0.1:8000`
+- forwarded headers are set for Flask (`X-Forwarded-*`)
+
+Set your real domain in `server_name`, then provision certificates:
+
+```bash
+sudo certbot --nginx -d atm.example.com
+```
+
+### 8.3 Flask security flags for proxy deployment
+
+Set these in `.env` on the server:
+
+```env
+TRUST_PROXY=1
+COOKIE_SECURE=1
+ENABLE_HSTS=1
+HSTS_MAX_AGE_SECONDS=31536000
+```
+
+- `TRUST_PROXY=1`: enables `ProxyFix` so Flask treats forwarded HTTPS info correctly.
+- `COOKIE_SECURE=1`: session cookies are HTTPS-only.
+- `ENABLE_HSTS=1`: enables `Strict-Transport-Security` on secure requests.
+
+### 8.4 Optional systemd units
+
+Templates are included:
+
+- `deploy/systemd/customer-app.service`
+- `deploy/systemd/atm-worker.service`
+
+Adjust paths/user, copy to `/etc/systemd/system/`, then enable:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now customer-app.service
+sudo systemctl enable --now atm-worker.service
+```

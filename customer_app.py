@@ -6,12 +6,19 @@ Run worker.py separately for background indexer tasks.
 import os
 import io
 import base64
+import hmac
+import logging
+import re
+import secrets
 import threading
+from decimal import Decimal, InvalidOperation
+from datetime import timedelta
 from functools import wraps
 
 from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 import qrcode
+from werkzeug.middleware.proxy_fix import ProxyFix
 from secrets_manager import get_secret
 
 load_dotenv()
@@ -27,6 +34,22 @@ from secure_user_db import SecureUserDatabase
 
 app = Flask(__name__)
 app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
+trust_proxy = os.environ.get("TRUST_PROXY", "0").strip().lower() in {"1", "true", "yes"}
+if trust_proxy:
+    # Trust first reverse-proxy hop for protocol/host forwarding in production.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes"},
+    PERMANENT_SESSION_LIFETIME=timedelta(minutes=20),
+)
+enable_hsts = os.environ.get("ENABLE_HSTS", "0").strip().lower() in {"1", "true", "yes"}
+hsts_max_age = int(os.environ.get("HSTS_MAX_AGE_SECONDS", "31536000").strip())
+logger = logging.getLogger(__name__)
+ACCOUNT_RE = re.compile(r"^\d{4,16}$")
+PIN_RE = re.compile(r"^\d{4,8}$")
+MAX_TX_AMOUNT = Decimal("10000.00")
 
 _atm = None
 _atm_lock = threading.Lock()
@@ -54,6 +77,72 @@ def build_qr_data_uri(content):
     image.save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
+
+
+def get_or_create_csrf_token():
+    token = session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+@app.context_processor
+def inject_csrf_token():
+    return {"csrf_token": get_or_create_csrf_token()}
+
+
+@app.before_request
+def protect_post_routes():
+    if request.method != "POST":
+        return None
+    submitted = request.form.get("csrf_token", "")
+    expected = session.get("_csrf_token", "")
+    if not expected or not submitted or not hmac.compare_digest(submitted, expected):
+        flash("Security check failed. Please retry.")
+        return redirect(url_for("login"))
+    return None
+
+
+@app.after_request
+def apply_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "img-src 'self' data:; "
+        "style-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "base-uri 'none'; frame-ancestors 'none'"
+    )
+    if enable_hsts and request.is_secure:
+        response.headers["Strict-Transport-Security"] = f"max-age={hsts_max_age}; includeSubDomains"
+    return response
+
+
+def is_valid_account(account):
+    return bool(ACCOUNT_RE.fullmatch(account or ""))
+
+
+def is_valid_pin(pin):
+    return bool(PIN_RE.fullmatch(pin or ""))
+
+
+def parse_amount(raw_amount):
+    try:
+        amount = Decimal(str(raw_amount or "0")).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError):
+        return None
+    if amount <= Decimal("0") or amount > MAX_TX_AMOUNT:
+        return None
+    return float(amount)
+
+
+def config_error_response(exc):
+    logger.exception("App error: %s", exc)
+    return render_template("config_error.html", error="Service temporarily unavailable."), 503
 
 
 def ensure_atm():
@@ -107,13 +196,16 @@ def login():
     if not account or not pin:
         flash("Enter account number and PIN.")
         return render_template("login.html", remaining_lock_seconds=0)
+    if not is_valid_account(account) or not is_valid_pin(pin):
+        flash("Invalid account format or PIN format.")
+        return render_template("login.html", remaining_lock_seconds=0)
 
     try:
         with atm_ops_lock:
             atm = ensure_atm()
             auth_result = atm.accounts_repo.authenticate_with_status(account, pin)
     except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
+        return config_error_response(e)
 
     auth_status = auth_result.get("status")
     if auth_status == "locked":
@@ -173,7 +265,7 @@ def dashboard():
             ]
             recent.reverse()
     except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
+        return config_error_response(e)
 
     qr_popup = session.pop("qr_popup", None)
     last_qr = session.get("last_qr")
@@ -190,9 +282,8 @@ def dashboard():
 @app.route("/withdraw", methods=["POST"])
 @login_required
 def withdraw():
-    try:
-        amount = float(request.form.get("amount") or 0)
-    except ValueError:
+    amount = parse_amount(request.form.get("amount"))
+    if amount is None:
         flash("Enter a valid amount.")
         return redirect(url_for("dashboard"))
 
@@ -217,7 +308,7 @@ def withdraw():
                     session["qr_popup"] = qr_payload
                     session["last_qr"] = qr_payload
     except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
+        return config_error_response(e)
 
     flash(msg)
     return redirect(url_for("dashboard"))
@@ -226,9 +317,8 @@ def withdraw():
 @app.route("/deposit", methods=["POST"])
 @login_required
 def deposit():
-    try:
-        amount = float(request.form.get("amount") or 0)
-    except ValueError:
+    amount = parse_amount(request.form.get("amount"))
+    if amount is None:
         flash("Enter a valid amount.")
         return redirect(url_for("dashboard"))
 
@@ -253,7 +343,7 @@ def deposit():
                     session["qr_popup"] = qr_payload
                     session["last_qr"] = qr_payload
     except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
+        return config_error_response(e)
 
     flash(msg)
     return redirect(url_for("dashboard"))

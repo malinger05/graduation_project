@@ -12,6 +12,7 @@
   </div>
   {% endif %}
   <form method="post" action="{{ url_for('login') }}" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>
       Account number
       <input type="text" name="account" inputmode="numeric" autocomplete="username" required>

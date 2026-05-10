@@ -1,0 +1,15 @@
+[Unit]
+Description=ATM Blockchain Indexer Worker
+After=network.target
+
+[Service]
+User=atm
+Group=www-data
+WorkingDirectory=/opt/atm-app
+EnvironmentFile=/opt/atm-app/.env
+ExecStart=/opt/atm-app/atm_venv/bin/python3 worker.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
