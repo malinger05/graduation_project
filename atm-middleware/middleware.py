@@ -9,7 +9,10 @@ Responsibilities:
   - Track login lockouts in memory
   - Manage sessions in memory (with TTL expiry)
   - Hash the confirmed transaction data and log it to Ethereum Sepolia
+  - PATCH the canonical hash + blockchainTx back to Core Banking
   - ACK / atomicity timer for withdrawals (in memory)
+  - Run blockchain reconciliation worker threads (submit-retry, confirm-poll,
+    tamper-check) — all going through Spring Boot's /admin/transactions/*
 
 Intentionally NOT here:
   - No database. No PostgreSQL. Core Banking owns all data.
@@ -17,15 +20,14 @@ Intentionally NOT here:
   - No transaction records. Core Banking stores transactions.
 """
 
-import hashlib
 import inspect
-import json
 import os
 import secrets
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import requests
 from dotenv import load_dotenv
@@ -37,18 +39,31 @@ if not hasattr(inspect, "getargspec"):
 
 from web3 import Web3
 
+# Make the project-root secrets_manager importable from this subdirectory.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+from secrets_manager import get_secret  # noqa: E402
+
+import blockchain_worker
+from admin_client import AdminClient
+from canonical import hash_transaction
+
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 CORE_BANKING_URL      = os.environ.get("CORE_BANKING_URL", "http://localhost:8080").rstrip("/")
+SERVICE_TOKEN         = get_secret(
+    "MIDDLEWARE_SERVICE_TOKEN", "", allow_env_fallback=True
+).strip()
 ACK_TIMEOUT_SECONDS   = int(os.environ.get("ACK_TIMEOUT_SECONDS", "30"))
 SESSION_TTL_SECONDS   = int(os.environ.get("SESSION_TTL_SECONDS", "1800"))  # 30 min
 LOCKOUT_MAX_ATTEMPTS  = int(os.environ.get("LOCKOUT_MAX_ATTEMPTS", "3"))
 LOCKOUT_MINUTES       = [5, 10, 15]  # progressive lockout durations
 
-CONTRACT_ADDRESS  = os.environ.get("CONTRACT_ADDRESS", "").strip()
-ETH_PRIVATE_KEY   = os.environ.get("ETH_PRIVATE_KEY", "").strip()
+CONTRACT_ADDRESS  = get_secret("CONTRACT_ADDRESS", "").strip()
+ETH_PRIVATE_KEY   = get_secret("ETH_PRIVATE_KEY", "").strip()
 RPC_URL           = os.environ.get("ETH_RPC_URL", "https://ethereum-sepolia.publicnode.com").strip()
 RPC_FALLBACK_URLS = [u.strip() for u in os.environ.get("ETH_RPC_FALLBACK_URLS", "").split(",") if u.strip()]
 
@@ -67,15 +82,48 @@ CONTRACT_ABI = [
 ]
 
 
+# ── Admin client (used by deposit/withdraw flow AND background worker) ───────
+
+_admin_client: AdminClient | None = None
+
+
+def _get_admin_client() -> AdminClient | None:
+    global _admin_client
+    if _admin_client is None and SERVICE_TOKEN:
+        _admin_client = AdminClient(CORE_BANKING_URL, SERVICE_TOKEN)
+    return _admin_client
+
+
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     threading.Thread(target=_atomicity_monitor, daemon=True).start()
     threading.Thread(target=_session_cleanup, daemon=True).start()
+
     print(f"[Middleware] Layer 2 started on port 8000")
     print(f"[Middleware] Core Banking: {CORE_BANKING_URL}")
     print(f"[Middleware] No database — Core Banking owns all data.")
+
+    # Spawn the blockchain reconciliation worker (submit-retry / confirm-poll /
+    # tamper-check) ONLY if everything it needs is configured. Otherwise log and
+    # skip — the deposit/withdraw flow still works without it.
+    admin = _get_admin_client()
+    if admin and CONTRACT_ADDRESS and ETH_PRIVATE_KEY:
+        blockchain_worker.start(
+            admin=admin,
+            submit_to_chain=_submit_to_blockchain,
+            get_receipt=_get_chain_receipt,
+            verify_on_chain=_verify_log_on_chain,
+        )
+        print("[Middleware] Blockchain reconciliation worker started.")
+    else:
+        missing = []
+        if not admin:             missing.append("MIDDLEWARE_SERVICE_TOKEN")
+        if not CONTRACT_ADDRESS:  missing.append("CONTRACT_ADDRESS")
+        if not ETH_PRIVATE_KEY:   missing.append("ETH_PRIVATE_KEY")
+        print(f"[Middleware] Worker NOT started — missing: {', '.join(missing)}")
+
     yield
 
 
@@ -139,9 +187,29 @@ def _submit_to_blockchain(hash_str: str) -> str | None:
         return None
 
 
-def _make_hash(payload: dict) -> str:
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
+def _get_chain_receipt(tx_hash: str) -> dict | None:
+    """Return a normalized receipt dict, or None if the tx isn't mined yet."""
+    bc = _get_blockchain()
+    if not bc:
+        return None
+    try:
+        receipt = bc["w3"].eth.get_transaction_receipt(tx_hash)
+    except Exception:
+        return None  # not yet mined / RPC hiccup
+    if receipt is None:
+        return None
+    return {"status": int(receipt.get("status", 0))}
+
+
+def _verify_log_on_chain(canonical_hash: str) -> bool:
+    """Call contract.verifyLog(hash) → True if the hash is stored on chain."""
+    bc = _get_blockchain()
+    if not bc:
+        return False
+    try:
+        return bool(bc["contract"].functions.verifyLog(canonical_hash).call())
+    except Exception:
+        return False
 
 
 # ── In-memory session store ───────────────────────────────────────────────────
@@ -347,6 +415,47 @@ def atm_logout(x_session_token: str = Header(...)):
     return {"status": "logged_out"}
 
 
+def _hash_and_persist(transaction_id: int,
+                      account_number: str,
+                      transaction_type: str,
+                      amount: float,
+                      balance_after: float,
+                      reference_id: str,
+                      created_at: str) -> tuple[str, str | None]:
+    """
+    Compute the canonical hash, submit to chain, and PATCH the row in Core
+    Banking so the worker has durable bookkeeping. On any failure the row
+    stays at chainStatus=PENDING_SUBMIT and the worker will retry it later.
+    Returns (canonical_hash, blockchain_tx_or_None).
+    """
+    c_hash = hash_transaction(
+        account_number=account_number,
+        transaction_type=transaction_type,
+        amount=amount,
+        balance_after=balance_after,
+        reference_id=reference_id,
+        created_at=created_at,
+    )
+    try:
+        bc_tx = _submit_to_blockchain(c_hash)
+    except Exception as e:
+        bc_tx = None
+        print(f"[Middleware] inline submit failed for tx {transaction_id}: {e}")
+
+    admin = _get_admin_client()
+    if admin:
+        try:
+            admin.patch_blockchain(
+                transaction_id=transaction_id,
+                canonical_hash=c_hash,
+                blockchain_tx=bc_tx,
+                submit_error=None if bc_tx else "inline submit failed",
+            )
+        except Exception as e:
+            print(f"[Middleware] PATCH /admin/transactions/{transaction_id}/blockchain failed: {e}")
+    return c_hash, bc_tx
+
+
 @app.post("/atm/deposit")
 def atm_deposit(req: AmountRequest, x_session_token: str = Header(...)):
     session       = _get_session(x_session_token)
@@ -362,23 +471,22 @@ def atm_deposit(req: AmountRequest, x_session_token: str = Header(...)):
 
     # 2. Read authoritative result — Core Banking did all the math
     result      = resp.json()
+    tx_id       = int(result["transactionId"])
     new_balance = float(result.get("balanceAfter", 0))
     ref_id      = str(result.get("referenceId", ""))
     created_at  = str(result.get("createdAt", datetime.now(timezone.utc).isoformat()))
     session["balance"] = new_balance
 
-    # 3. Hash confirmed data and log to blockchain — middleware is just the witness
-    payload = {
-        "account_id":  account_number,
-        "type":        "DEPOSIT",
-        "amount":      float(req.amount),
-        "old_balance": old_balance,
-        "new_balance": new_balance,
-        "ref_id":      ref_id,
-        "created_at":  created_at,
-    }
-    c_hash = _make_hash(payload)
-    bc_tx  = _submit_to_blockchain(c_hash)
+    # 3. Hash confirmed data, log to chain, persist hash+tx into Core Banking
+    c_hash, bc_tx = _hash_and_persist(
+        transaction_id=tx_id,
+        account_number=account_number,
+        transaction_type="DEPOSIT",
+        amount=req.amount,
+        balance_after=new_balance,
+        reference_id=ref_id,
+        created_at=created_at,
+    )
 
     return {
         "status":        "SUCCESS",
@@ -389,7 +497,8 @@ def atm_deposit(req: AmountRequest, x_session_token: str = Header(...)):
         "blockchainTx":  bc_tx,
         "verifyUrl":     f"https://sepolia.etherscan.io/tx/{bc_tx}" if bc_tx else None,
         "referenceId":   ref_id,
-        "message":       "" if bc_tx else "Blockchain sync unavailable — transaction still recorded in Core Banking.",
+        "transactionId": tx_id,
+        "message":       "" if bc_tx else "Blockchain sync unavailable — worker will retry.",
     }
 
 
@@ -410,28 +519,27 @@ def atm_withdraw(req: AmountRequest, x_session_token: str = Header(...)):
 
     # 2. Read authoritative result — Core Banking did all the math
     result      = resp.json()
+    tx_id       = int(result["transactionId"])
     new_balance = float(result.get("balanceAfter", 0))
     ref_id      = str(result.get("referenceId", ""))
     created_at  = str(result.get("createdAt", datetime.now(timezone.utc).isoformat()))
     session["balance"] = new_balance
 
-    # 3. Hash confirmed data and log to blockchain
-    payload = {
-        "account_id":  account_number,
-        "type":        "WITHDRAW",
-        "amount":      float(req.amount),
-        "old_balance": old_balance,
-        "new_balance": new_balance,
-        "ref_id":      ref_id,
-        "created_at":  created_at,
-    }
-    c_hash = _make_hash(payload)
-    bc_tx  = _submit_to_blockchain(c_hash)
+    # 3. Hash confirmed data, log to chain, persist hash+tx into Core Banking
+    c_hash, bc_tx = _hash_and_persist(
+        transaction_id=tx_id,
+        account_number=account_number,
+        transaction_type="WITHDRAW",
+        amount=req.amount,
+        balance_after=new_balance,
+        reference_id=ref_id,
+        created_at=created_at,
+    )
 
     # 4. Register ACK timer — if ATM doesn't confirm cash dispensed within
     #    ACK_TIMEOUT_SECONDS, atomicity monitor re-deposits the amount
-    tx_id = _new_ack_id()
-    _pending_acks[tx_id] = {
+    ack_id = _new_ack_id()
+    _pending_acks[ack_id] = {
         "account_id": account_id,
         "amount":     req.amount,
         "jwt":        jwt,
@@ -439,7 +547,8 @@ def atm_withdraw(req: AmountRequest, x_session_token: str = Header(...)):
     }
 
     return {
-        "middlewareTxId": tx_id,
+        "middlewareTxId": ack_id,
+        "transactionId":  tx_id,
         "status":         "SUCCESS",
         "amount":         req.amount,
         "oldBalance":     old_balance,

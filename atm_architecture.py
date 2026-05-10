@@ -4,15 +4,15 @@ ATM is a pure UI client. Zero banking logic here.
 
 WHERE EACH RESPONSIBILITY LIVES:
   Layer 1 (this file)   → show UI, send requests, display results
-  Layer 2 (middleware)  → record transactions, atomicity, blockchain logging
-  Layer 3 (Spring Boot) → deposit, withdraw, balance, customer, account data
+  Layer 2 (middleware)  → atomicity, blockchain logging, session/lockout state
+  Layer 3 (Spring Boot) → deposit, withdraw, balance, customer, account data,
+                          and the PostgreSQL database (in core-banking-system)
 """
 
 import os
-import time
-from dotenv import load_dotenv
-from secrets_manager import get_secret
+
 import requests
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -20,20 +20,14 @@ load_dotenv()
 
 MIDDLEWARE_URL = os.environ.get("MIDDLEWARE_URL", "http://localhost:8000").rstrip("/")
 
-# Kept so existing imports (worker.py etc.) don't break
-DATABASE_URL = get_secret("DATABASE_URL", "postgresql://localhost:5432/atm").strip()
-ACCOUNTS_DATABASE_URL = get_secret("ACCOUNTS_DATABASE_URL", DATABASE_URL).strip()
-ACCOUNTS_TABLE = os.environ.get("ACCOUNTS_TABLE", "accounts").strip()
-INDEXER_INTERVAL_SECONDS = float(os.environ.get("INDEXER_INTERVAL_SECONDS", "3").strip())
-
 
 # ── Middleware HTTP client ─────────────────────────────────────────────────────
 
 class MiddlewareClient:
     """
     Single HTTP client for all ATM operations.
-    Holds session token returned at login.
-    Never touches PostgreSQL or blockchain directly.
+    Holds the session token returned at login.
+    Never touches PostgreSQL or blockchain directly — middleware owns both.
     """
 
     def __init__(self, base_url: str):
@@ -53,9 +47,8 @@ class MiddlewareClient:
     def authenticate_with_status(self, account_number: str, pin: str) -> dict:
         """
         POST /atm/login → middleware → Spring Boot /atm/login.
-        Spring Boot verifies BCrypt PIN and returns JWT.
+        Spring Boot verifies BCrypt PIN and returns a JWT.
         Middleware creates a session token and returns it to ATM.
-        Returns same shape as original AccountsRepository.authenticate_with_status().
         """
         try:
             resp = requests.post(
@@ -96,7 +89,7 @@ class MiddlewareClient:
                 "account_id": account_number,
                 "name": self._customer_name,
                 "balance": self._cached_balance,
-            }
+            },
         }
 
     def authenticate(self, account_number: str, pin: str):
@@ -124,16 +117,9 @@ class MiddlewareClient:
 
     def deposit(self, amount: float) -> tuple[bool, str, dict | None]:
         """
-        POST /atm/deposit → middleware.
-
-        Middleware (Layer 2) does:
-          1. INSERT middleware_transactions status=PENDING
-          2. POST /accounts/{id}/deposit → Spring Boot (Layer 3)
-          3. Spring Boot: acquires pessimistic lock, adds balance, saves to PostgreSQL
-          4. UPDATE status=SUCCESS
-          5. Writes canonical hash to Sepolia blockchain
-
-        ATM just shows the result.
+        POST /atm/deposit → middleware → Spring Boot /accounts/{id}/deposit.
+        Spring Boot acquires a pessimistic lock, updates the balance, persists
+        the transaction. Middleware logs the canonical hash to Sepolia.
         """
         try:
             resp = requests.post(
@@ -161,15 +147,9 @@ class MiddlewareClient:
 
     def withdraw(self, amount: float) -> tuple[bool, str, dict | None]:
         """
-        POST /atm/withdraw → middleware.
-
-        Middleware (Layer 2) does:
-          1. INSERT middleware_transactions status=PENDING
-          2. POST /accounts/{id}/withdraw → Spring Boot (Layer 3)
-          3. Spring Boot: acquires pessimistic lock, subtracts balance, saves to PostgreSQL
-          4. UPDATE status=SUCCESS, starts 30s ACK timer
-          5. ATM sends /atm/ack after cash is dispensed
-          6. No ACK in 30s → middleware reverses debit on Spring Boot (atomicity rollback)
+        POST /atm/withdraw → middleware → Spring Boot /accounts/{id}/withdraw.
+        Middleware starts a 30s ACK timer; if ATM doesn't confirm cash dispensed,
+        the debit is reversed (atomicity rollback).
         """
         try:
             resp = requests.post(
@@ -189,8 +169,8 @@ class MiddlewareClient:
         data = resp.json()
         self._cached_balance = float(data.get("newBalance", self._cached_balance))
 
-        # Send ACK — simulates physical cash dispense confirmation
-        # On real ATM hardware this fires AFTER the cash drawer opens
+        # Send ACK — simulates physical cash-dispense confirmation.
+        # On real ATM hardware this fires AFTER the cash drawer opens.
         mid_tx_id = data.get("middlewareTxId")
         if mid_tx_id:
             try:
@@ -201,7 +181,7 @@ class MiddlewareClient:
                     timeout=10,
                 )
             except Exception:
-                # No ACK → atomicity monitor will automatically reverse the debit
+                # No ACK → atomicity monitor will automatically reverse the debit.
                 pass
 
         msg = f"WITHDRAW ${amount:.2f}. New balance: ${self._cached_balance:.2f}"
@@ -213,7 +193,7 @@ class MiddlewareClient:
     # ── Transaction history ───────────────────────────────────────────────────
 
     def get_transactions_for_account(self, account_id, limit=10) -> list:
-        """GET /atm/transactions → middleware reads from middleware_transactions table."""
+        """GET /atm/transactions → middleware proxies to Core Banking."""
         try:
             resp = requests.get(
                 f"{self.base_url}/atm/transactions",
@@ -232,19 +212,13 @@ class MiddlewareClient:
 
 
 # ── AccountsRepository ────────────────────────────────────────────────────────
-# Thin wrapper so customer_app.py keeps the same interface it always had
+# Thin wrapper so customer_app.py keeps the same interface it always had.
 
 class AccountsRepository:
     """
-    Wraps MiddlewareClient with the same method signatures
-    that customer_app.py expects from the original local AccountsRepository.
+    Wraps MiddlewareClient with the same method signatures that
+    customer_app.py expects from the original local AccountsRepository.
     """
-
-    # Sentinel so any DSN check in calling code passes
-    class _FakeConn:
-        dsn = "__middleware__"
-    conn = _FakeConn()
-    table_name = "accounts"
 
     def __init__(self, middleware_url: str):
         self._client = MiddlewareClient(middleware_url)
@@ -267,17 +241,10 @@ class AccountsRepository:
 
 
 # ── TransactionsRepository ────────────────────────────────────────────────────
-# All writes happen in middleware. This class only reads.
+# All writes happen in middleware / Core Banking. This class only reads.
 
 class TransactionsRepository:
-    """
-    In 3-layer mode all transaction writes happen in middleware (Layer 2).
-    This class provides read access to middleware transaction history via HTTP.
-    """
-
-    class _FakeConn:
-        dsn = "__middleware__"
-    conn = _FakeConn()
+    """Read-only view of transaction history via the middleware."""
 
     def __init__(self, accounts_repo: AccountsRepository):
         self._accounts_repo = accounts_repo
@@ -291,15 +258,6 @@ class TransactionsRepository:
 
     def get_latest_transaction_for_account(self, account_id) -> dict | None:
         return self._client.get_latest_transaction_for_account(account_id)
-
-    # Stubs — all these operations happen in middleware or Spring Boot
-    def get_all_transactions(self): return []
-    def get_transaction_by_id(self, tx_id): return None
-    def get_pending_transactions(self): return []
-    def get_confirmed_transactions(self): return []
-    def get_transactions_for_submission(self, **kwargs): return []
-    def create_local_transaction_atomic(self, *args, **kwargs):
-        raise NotImplementedError("Transactions handled by middleware in 3-layer mode.")
 
 
 # ── ATMApp ────────────────────────────────────────────────────────────────────
@@ -315,20 +273,17 @@ class ATMApp:
 
     NOT responsible for:
       - Balance calculation  → Spring Boot
-      - Transaction recording → Middleware
+      - Transaction recording → Core Banking (PostgreSQL)
       - Blockchain logging   → Middleware
       - Atomicity/rollback   → Middleware
       - Pessimistic locking  → Spring Boot
     """
 
-    def __init__(self, accounts_repo: AccountsRepository,
-                 transactions_repo: TransactionsRepository,
-                 blockchain=None,   # unused in 3-layer mode
-                 indexer=None):     # unused in 3-layer mode
+    def __init__(self,
+                 accounts_repo: AccountsRepository,
+                 transactions_repo: TransactionsRepository):
         self.accounts_repo = accounts_repo
         self.transactions_repo = transactions_repo
-        self.blockchain = blockchain
-        self.indexer = indexer
         self.current_account = None
 
     def authenticate(self, account_id: str, pin: str) -> bool:
@@ -357,7 +312,7 @@ class ATMApp:
 
     def verify_integrity(self, txn) -> tuple[bool, str]:
         """
-        Integrity is verified by middleware indexer against blockchain.
+        Integrity is verified by middleware against the blockchain.
         ATM just reads the status from middleware transaction history.
         """
         status = txn.get("status", "unknown")
@@ -369,109 +324,11 @@ class ATMApp:
             return False, "Transaction failed"
         return False, f"Status: {status}"
 
-    def export_audit_report(self):
-        """Audit log lives in middleware DB, not ATM."""
-        print("Audit log is in middleware DB:")
-        print("psql -d middleware -c 'SELECT * FROM middleware_transactions ORDER BY id DESC;'")
-
-
-# ── Stub classes for backward compatibility ───────────────────────────────────
-# worker.py imports BlockchainGateway and Indexer from here.
-# In 3-layer mode these are not used — middleware handles blockchain.
-
-class BlockchainGateway:
-    def __init__(self):
-        raise RuntimeError(
-            "BlockchainGateway is not used in 3-layer mode.\n"
-            "Blockchain logging is handled by middleware (Layer 2).\n"
-            "Run worker.py only in local mode."
-        )
-
-
-class Indexer:
-    def __init__(self, *args, **kwargs):
-        raise RuntimeError(
-            "Indexer is not used in 3-layer mode.\n"
-            "The middleware has its own blockchain retry worker.\n"
-            "Run worker.py only in local mode."
-        )
-
 
 # ── Factory ───────────────────────────────────────────────────────────────────
 
-def make_repos():
-    """Returns (accounts_repo, transactions_repo, None, None) for 3-layer mode."""
+def make_repos() -> tuple[AccountsRepository, TransactionsRepository]:
     print(f"[ATM Layer 1] Middleware at {MIDDLEWARE_URL}")
     accounts_repo = AccountsRepository(MIDDLEWARE_URL)
     transactions_repo = TransactionsRepository(accounts_repo)
-    return accounts_repo, transactions_repo, None, None
-
-
-# ── CLI entry point ───────────────────────────────────────────────────────────
-
-def main():
-    accounts_repo, transactions_repo, _, _ = make_repos()
-    atm = ATMApp(accounts_repo, transactions_repo)
-
-    while True:
-        print("\n1. Login\n2. Exit")
-        choice = input("Choose: ").strip()
-        if choice == "1":
-            account = input("Account number: ").strip()
-            pin = input("PIN: ").strip()
-
-            try:
-                result = accounts_repo.authenticate_with_status(account, pin)
-            except RuntimeError as e:
-                print(f"Error: {e}")
-                continue
-
-            if result["status"] == "locked":
-                secs = result.get("remaining_lock_seconds", 0)
-                print(f"Account locked. Try again in {secs // 60}m {secs % 60}s")
-                continue
-            if result["status"] != "ok":
-                left = result.get("attempts_to_next_lock")
-                msg = (f"Invalid credentials. {left} attempt(s) left before lockout."
-                       if left else "Invalid credentials.")
-                print(msg)
-                continue
-
-            atm.current_account = account
-            print(f"Welcome {result['account']['name']}")
-
-            while True:
-                print(
-                    f"\nBalance: ${atm.check_balance():.2f}\n"
-                    "1. Withdraw\n2. Deposit\n3. Transaction History\n4. Logout"
-                )
-                action = input("Choose: ").strip()
-                if action == "1":
-                    try:
-                        amount = float(input("Withdraw amount: $"))
-                        _, msg, _ = atm.withdraw(amount)
-                        print(msg)
-                    except ValueError:
-                        print("Invalid amount")
-                elif action == "2":
-                    try:
-                        amount = float(input("Deposit amount: $"))
-                        _, msg, _ = atm.deposit(amount)
-                        print(msg)
-                    except ValueError:
-                        print("Invalid amount")
-                elif action == "3":
-                    txns = transactions_repo.get_transactions_for_account(account, 20)
-                    if not txns:
-                        print("No transactions yet")
-                    for t in txns:
-                        print(f"  #{t['id']} {t['type']} ${t['amount']} → {t['status']}")
-                elif action == "4":
-                    break
-        elif choice == "2":
-            break
-        time.sleep(0.1)
-
-
-if __name__ == "__main__":
-    main()
+    return accounts_repo, transactions_repo

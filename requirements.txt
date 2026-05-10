@@ -1,9 +1,18 @@
-web3>=7.0,<8
+# Layer 1 — Flask UI + ATM client
+Flask>=3.0.0
 python-dotenv>=1.0.0
-psycopg2-binary>=2.9.9
 qrcode[pil]>=7.4.2
 keyring>=25.0.0
-Flask>=3.0.0
-argon2-cffi>=23.1.0
+requests>=2.32.0
 honcho>=1.1.0
+
+# Layer 2 — middleware (FastAPI)
+fastapi>=0.110.0
+uvicorn>=0.29.0
+pydantic>=2.6.0
+
+# Blockchain (used by middleware to log canonical hashes to Sepolia)
+web3>=7.0,<8
+
+# Tests
 pytest>=8.0.0
