@@ -1,0 +1,4 @@
+# Development / security tooling (not required to run the ATM in production).
+# Install with: pip install -r requirements-dev.txt
+pip-audit>=2.7.0
+bandit>=1.7.0

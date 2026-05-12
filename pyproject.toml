@@ -1,0 +1,2 @@
+[tool.bandit]
+exclude_dirs = [".venv", "atm_venv", ".git", ".pytest_cache", "__pycache__", "build", "dist"]

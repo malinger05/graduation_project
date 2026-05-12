@@ -6,5 +6,6 @@ keyring>=25.0.0
 Flask>=3.0.0
 gunicorn>=22.0.0
 argon2-cffi>=23.1.0
+cryptography>=42.0.0
 honcho>=1.1.0
 pytest>=8.0.0

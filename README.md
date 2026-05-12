@@ -116,6 +116,36 @@ source atm_venv/bin/activate
 python3 -m pytest tests/
 ```
 
+### Optional: dependency and static security scans
+
+Use **`pip-audit`** to find known vulnerabilities in **packages installed in your active virtualenv**, and **`bandit`** for common Python security anti-patterns (e.g. unsafe `eval`, weak crypto usage).
+
+Activate your venv first (README uses `atm_venv`; a `.venv` folder is fine too):
+
+```bash
+source atm_venv/bin/activate   # or: source .venv/bin/activate
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+```
+
+Run both checks:
+
+```bash
+bash scripts/run_security_checks.sh
+```
+
+Or run them separately:
+
+```bash
+pip-audit --local --desc on
+bandit -r atm_architecture.py atm.py customer_app.py secure_user_db.py secrets_manager.py worker.py view_db.py scripts tests -ll -f txt
+```
+
+- **`pip-audit`**: `scripts/run_security_checks.sh` uses **`--local`** so it audits what you actually installed. That avoids **`ResolutionImpossible`** errors from `pip-audit -r requirements.txt`, which builds a temporary environment and can fail the same way a fresh `pip install -r requirements.txt` would on some platforms. If you want a strict requirements-file audit anyway, run `pip-audit -r requirements.txt --desc on` after ensuring a clean resolver (e.g. newer Python / updated pins).
+- **`bandit`**: the script scans **only application paths** (root `.py` files, `scripts/`, `tests/`) so dependencies inside `.venv` are never analyzed (that caused false HIGH counts and multi-minute runs). Optional **`pyproject.toml`** `[tool.bandit]` documents `exclude_dirs` if you run `bandit -r .` yourself. The script uses **`-lll`** (HIGH only) for the **exit code**, then **`-ll`** for a **medium+** triage report.
+
+These scans are recommended before releases and in CI; they complement the automated tests in `tests/`.
+
 ### Optional: inspect the database
 
 `view_db.py` lists users from SQLite (`secure_user_db`) and recent rows from keychain-backed `DATABASE_URL`:
