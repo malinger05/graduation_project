@@ -4,24 +4,172 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}ATM{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='customer.css') }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --navy:   #0b1422;
+      --navy2:  #111d30;
+      --navy3:  #0d1829;
+      --red:    #e8193c;
+      --red2:   #c01030;
+      --green:  #3db88a;
+      --blue:   #4a90e8;
+      --gold:   #c8981a;
+      --border: rgba(255,255,255,0.08);
+      --text:   #e8eaf0;
+      --muted:  #4a6080;
+      --sans:   'DM Sans', sans-serif;
+      --mono:   'DM Mono', monospace;
+    }
+
+    html, body { height: 100%; }
+
+    body {
+      background: var(--navy);
+      color: var(--text);
+      font-family: var(--sans);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Topbar ── */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 32px;
+      height: 60px;
+      background: var(--navy2);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .logo {
+      font-family: var(--mono);
+      font-size: 13px;
+      letter-spacing: 0.15em;
+      color: var(--text);
+      text-transform: uppercase;
+      text-decoration: none;
+    }
+
+    .topbar-divider {
+      width: 1px;
+      height: 20px;
+      background: var(--border);
+    }
+
+    .topbar-account {
+      font-size: 12px;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .topbar-who {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 7px 16px;
+      border-radius: 8px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: var(--sans);
+      letter-spacing: 0.03em;
+      transition: all 0.2s;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+    }
+    .btn-ghost:hover { border-color: rgba(255,255,255,0.2); color: var(--text); }
+
+    /* ── Main ── */
+    .main { flex: 1; display: flex; flex-direction: column; }
+
+    /* ── Flash (hidden — toasts handle it) ── */
+    .flash-list { display: none; }
+
+    {% block base_styles %}{% endblock %}
+  </style>
 </head>
 <body>
-  <div class="shell">
-    <header class="topbar">
-      <span class="logo">ATM</span>
-      {% block header_extra %}{% endblock %}
-    </header>
-    <main class="main">
-      {% with messages = get_flashed_messages() %}
-        {% if messages %}
-          <ul class="flash-list">
-            {% for m in messages %}<li class="flash">{{ m }}</li>{% endfor %}
-          </ul>
-        {% endif %}
-      {% endwith %}
-      {% block body %}{% endblock %}
-    </main>
-  </div>
+  <header class="topbar">
+    <div class="topbar-left">
+      <a href="{{ url_for('dashboard') }}" class="logo">ATM</a>
+      {% block topbar_center %}{% endblock %}
+    </div>
+    <div class="topbar-right">
+      {% block topbar_right %}{% endblock %}
+    </div>
+  </header>
+
+  <main class="main">
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="toast-stack" id="toast-stack">
+          {% for m in messages %}
+            <div class="toast">{{ m }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    {% block body %}{% endblock %}
+  </main>
+
+  <style>
+    .toast-stack {
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 999;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 90%;
+      max-width: 420px;
+      pointer-events: none;
+    }
+    .toast {
+      background: var(--navy2);
+      border: 1px solid rgba(99,160,255,0.25);
+      color: #8ab4f8;
+      padding: 13px 20px;
+      border-radius: 10px;
+      font-size: 13px;
+      text-align: center;
+      animation: toastIn 0.3s ease;
+    }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+  <script>
+    setTimeout(() => {
+      const s = document.getElementById('toast-stack');
+      if (s) s.style.opacity = '0';
+    }, 4000);
+  </script>
 </body>
 </html>

@@ -245,40 +245,7 @@ def logout():
     return redirect(url_for("login"))
 
 
-@app.route("/dashboard", methods=["GET"])
-@login_required
-def dashboard():
-    atm = _get_session_atm()
-    if not atm:
-        session.clear()
-        return redirect(url_for("login"))
 
-    try:
-        balance = atm.check_balance()
-        raw_txns = atm.transactions_repo.get_transactions_for_account(session["account"], 10)
-        recent = [
-            {
-                # Core Banking returns camelCase — transactionType, transactionStatus, createdAt
-                "type":      t.get("transactionType") or t.get("type", ""),
-                "amount":    float(t.get("amount", 0) or 0),
-                "timestamp": str(t.get("createdAt") or t.get("created_at", "")),
-                "status":    t.get("transactionStatus") or t.get("status", "APPROVED"),
-            }
-            for t in raw_txns
-        ]
-    except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
-
-    qr_popup = session.pop("qr_popup", None)
-    last_qr = session.get("last_qr")
-    return render_template(
-        "dashboard.html",
-        full_name=session.get("full_name", "Customer"),
-        balance=balance,
-        recent=recent,
-        qr_popup=qr_popup,
-        last_qr=last_qr,
-    )
 
 
 @app.route("/withdraw", methods=["POST"])
@@ -336,6 +303,134 @@ def deposit():
     flash(msg)
     return redirect(url_for("dashboard"))
 
+import requests as _req
+
+@app.route("/tx-status/<int:transaction_id>")
+@login_required
+def tx_status(transaction_id):
+    atm = _get_session_atm()
+    if not atm:
+        return {"error": "no session"}, 401
+    try:
+        resp = _req.get(
+            f"{MIDDLEWARE_URL}/atm/tx-status/{transaction_id}",
+            headers={"x-session-token": atm.accounts_repo.client._session_token},
+            timeout=5,
+        )
+        return resp.json(), resp.status_code
+    except Exception:
+        return {"error": "unavailable"}, 503
+
+# ── ADD THESE NEW ROUTES TO customer_app.py ──────────────────────────────────
+# Place them after the existing /deposit route and before the /tx-status route
+
+
+@app.route("/balance")
+@login_required
+def balance_page():
+    atm = _get_session_atm()
+    if not atm:
+        session.clear()
+        return redirect(url_for("login"))
+    try:
+        balance = atm.check_balance()
+    except Exception as e:
+        return render_template("config_error.html", error=str(e)), 503
+    return render_template(
+        "balance.html",
+        full_name=session.get("full_name", "Customer"),
+        balance=balance,
+    )
+
+
+@app.route("/transactions")
+@login_required
+def transactions_page():
+    atm = _get_session_atm()
+    if not atm:
+        session.clear()
+        return redirect(url_for("login"))
+    try:
+        raw_txns = atm.transactions_repo.get_transactions_for_account(session["account"], 20)
+        recent = [
+            {
+                "type":           t.get("transactionType") or t.get("type", ""),
+                "amount":         float(t.get("amount", 0) or 0),
+                "timestamp":      str(t.get("createdAt") or t.get("created_at", "")),
+                "status":         t.get("transactionStatus") or t.get("status", "APPROVED"),
+                "transaction_id": t.get("transactionId"),
+                "chain_status":   t.get("chainStatus", "PENDING_SUBMIT"),
+                "blockchain_tx":  t.get("blockchainTx", ""),
+            }
+            for t in raw_txns
+        ]
+    except Exception as e:
+        return render_template("config_error.html", error=str(e)), 503
+    return render_template(
+        "transactions.html",
+        full_name=session.get("full_name", "Customer"),
+        recent=recent,
+    )
+
+
+@app.route("/withdraw-page")
+@login_required
+def withdraw_page():
+    atm = _get_session_atm()
+    if not atm:
+        session.clear()
+        return redirect(url_for("login"))
+    try:
+        balance = atm.check_balance()
+    except Exception as e:
+        return render_template("config_error.html", error=str(e)), 503
+    return render_template(
+        "withdraw.html",
+        full_name=session.get("full_name", "Customer"),
+        balance=balance,
+    )
+
+
+@app.route("/deposit-page")
+@login_required
+def deposit_page():
+    atm = _get_session_atm()
+    if not atm:
+        session.clear()
+        return redirect(url_for("login"))
+    try:
+        balance = atm.check_balance()
+    except Exception as e:
+        return render_template("config_error.html", error=str(e)), 503
+    return render_template(
+        "deposit.html",
+        full_name=session.get("full_name", "Customer"),
+        balance=balance,
+    )
+
+
+# ── ALSO UPDATE the existing /dashboard route to pass last_qr only ────────────
+# Replace the existing dashboard() function with this:
+
+@app.route("/dashboard", methods=["GET"])
+@login_required
+def dashboard():
+    atm = _get_session_atm()
+    if not atm:
+        session.clear()
+        return redirect(url_for("login"))
+    try:
+        balance = atm.check_balance()
+    except Exception as e:
+        return render_template("config_error.html", error=str(e)), 503
+
+    last_qr = session.get("last_qr")
+    return render_template(
+        "dashboard.html",
+        full_name=session.get("full_name", "Customer"),
+        balance=balance,
+        last_qr=last_qr,
+    )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5001"))

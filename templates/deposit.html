@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Deposit — ATM{% endblock %}
+
+{% block topbar_center %}
+  <div class="topbar-divider"></div>
+  <span class="topbar-account">{{ session.get('account', '') if session else '' }}</span>
+  <div class="step-indicator">
+    <span class="step active">1. Amount</span>
+    <span class="step-sep">›</span>
+    <span class="step">2. Confirm</span>
+  </div>
+{% endblock %}
+
+{% block topbar_right %}
+  <span class="topbar-who">{{ full_name }}</span>
+  <form method="post" action="{{ url_for('logout') }}">
+    <button type="submit" class="btn-ghost">Sign out</button>
+  </form>
+{% endblock %}
+
+{% block body %}
+<div class="tx-shell">
+
+  <div class="tx-top green-top">
+    <div class="tx-top-inner">
+      <h1 class="tx-headline">Cash Deposit</h1>
+      <p class="tx-balance-hint">Balance: <strong>${{ "%.2f"|format(balance) }}</strong></p>
+    </div>
+  </div>
+
+  <div class="tx-body">
+    <div class="tx-body-inner">
+
+      <form method="post" action="{{ url_for('deposit') }}" id="deposit-form">
+        <div class="amount-field">
+          <div class="amount-input-wrap green-focus">
+            <span class="amount-symbol">$</span>
+            <input
+              type="number"
+              name="amount"
+              id="amount-input"
+              min="0.01"
+              step="0.01"
+              placeholder="0.00"
+              required
+              autofocus>
+          </div>
+          <p class="amount-hint">Enter the amount you wish to deposit</p>
+        </div>
+
+        <div class="quick-grid">
+          {% for amt in [20, 50, 100, 200, 500, 1000] %}
+          <button type="button" class="quick-btn green-quick" onclick="setAmount({{ amt }})">
+            ${{ amt }}
+          </button>
+          {% endfor %}
+        </div>
+
+        <div class="tx-actions">
+          <a href="{{ url_for('dashboard') }}" class="tx-back">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            Back
+          </a>
+          <button type="submit" class="tx-confirm green">
+            Confirm
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </button>
+        </div>
+      </form>
+
+    </div>
+  </div>
+
+</div>
+
+<style>
+.tx-shell { display: flex; flex-direction: column; min-height: calc(100vh - 60px); }
+.tx-top { background: var(--navy2); border-bottom: 1px solid var(--border); padding: 32px 48px; }
+.green-top { border-bottom-color: rgba(61,184,138,0.15); }
+.tx-top-inner { max-width: 700px; margin: 0 auto; display: flex; align-items: baseline; justify-content: space-between; }
+.tx-headline { font-size: 32px; font-weight: 300; letter-spacing: -0.01em; }
+.tx-balance-hint { font-size: 13px; color: var(--muted); }
+.tx-balance-hint strong { color: var(--green); font-weight: 500; }
+.tx-body { flex: 1; padding: 48px; }
+.tx-body-inner { max-width: 700px; margin: 0 auto; }
+.amount-field { margin-bottom: 32px; }
+.amount-input-wrap { display: flex; align-items: center; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 14px; padding: 0 24px; margin-bottom: 10px; transition: border-color 0.2s; }
+.amount-input-wrap:focus-within { border-color: rgba(255,255,255,0.2); }
+.green-focus:focus-within { border-color: rgba(61,184,138,0.3); }
+.amount-symbol { font-size: 32px; font-weight: 300; color: var(--muted); font-family: var(--mono); padding-right: 12px; border-right: 1px solid var(--border); margin-right: 12px; line-height: 1; }
+.amount-input-wrap input { background: transparent; border: none; outline: none; color: var(--text); font-size: 36px; font-weight: 300; font-family: var(--mono); padding: 22px 0; width: 100%; }
+.amount-input-wrap input::placeholder { color: #1e2a38; }
+.amount-hint { font-size: 12px; color: var(--muted); }
+.quick-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 40px; }
+.quick-btn { background: rgba(255,255,255,0.04); border: 1px solid var(--border); color: var(--muted); border-radius: 10px; padding: 14px; font-size: 15px; font-family: var(--mono); cursor: pointer; transition: all 0.15s; }
+.quick-btn:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.18); color: var(--text); }
+.green-quick.selected { background: rgba(61,184,138,0.1); border-color: rgba(61,184,138,0.3); color: var(--green); }
+.tx-actions { display: grid; grid-template-columns: 1fr 2fr; gap: 12px; }
+.tx-back { display: flex; align-items: center; justify-content: center; gap: 8px; background: var(--navy2); border: 1px solid var(--border); color: var(--muted); border-radius: 12px; padding: 16px; font-size: 15px; font-weight: 500; text-decoration: none; font-family: var(--sans); transition: all 0.2s; }
+.tx-back:hover { color: var(--text); border-color: rgba(255,255,255,0.18); }
+.tx-confirm { display: flex; align-items: center; justify-content: space-between; border: none; border-radius: 12px; padding: 16px 24px; font-size: 15px; font-weight: 500; font-family: var(--sans); cursor: pointer; transition: opacity 0.2s, transform 0.1s; }
+.tx-confirm:active { transform: scale(0.98); }
+.tx-confirm.green { background: var(--green); color: #fff; }
+.tx-confirm.green:hover { opacity: 0.88; }
+.step-indicator { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.step { color: var(--muted); }
+.step.active { color: var(--text); font-weight: 500; }
+.step-sep { color: var(--muted); }
+</style>
+
+<script>
+function setAmount(val) {
+  document.getElementById('amount-input').value = val;
+  document.querySelectorAll('.quick-btn').forEach(b => b.classList.remove('selected'));
+  event.target.classList.add('selected');
+}
+</script>
+{% endblock %}

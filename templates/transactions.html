@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block title %}Transactions — ATM{% endblock %}
+
+{% block topbar_center %}
+  <div class="topbar-divider"></div>
+  <span class="topbar-account">{{ session.get('account', '') if session else '' }}</span>
+{% endblock %}
+
+{% block topbar_right %}
+  <span class="topbar-who">{{ full_name }}</span>
+  <form method="post" action="{{ url_for('logout') }}">
+    <button type="submit" class="btn-ghost">Sign out</button>
+  </form>
+{% endblock %}
+
+{% block body %}
+<div class="txp-shell">
+
+  <div class="txp-header">
+    <div class="txp-header-inner">
+      <div>
+        <h1 class="txp-title">Recent activity</h1>
+        <p class="txp-sub">Last {{ recent|length }} transactions</p>
+      </div>
+      <a href="{{ url_for('dashboard') }}" class="back-link">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        Menu
+      </a>
+    </div>
+  </div>
+
+  <div class="txp-body">
+    <div class="txp-body-inner">
+      {% if recent %}
+        <ul class="tx-list">
+          {% for t in recent %}
+          <li class="tx-row">
+            <div class="tx-icon {% if t.type == 'DEPOSIT' %}ic-green{% elif t.type == 'WITHDRAW' %}ic-red{% else %}ic-blue{% endif %}">
+              {% if t.type == 'DEPOSIT' %}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+              {% elif t.type == 'WITHDRAW' %}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+              {% else %}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+              {% endif %}
+            </div>
+
+            <div class="tx-info">
+              <span class="tx-type">{{ t.type }}</span>
+              <span class="tx-time">{{ t.timestamp[:19].replace('T', ' ') }}</span>
+            </div>
+
+            <div class="tx-mid">
+              <span class="badge b-bank">{{ t.status }}</span>
+
+              {% if t.transaction_id %}
+                {% if t.chain_status == "CONFIRMED" %}
+                  <span class="badge b-confirmed">⛓ confirmed</span>
+                {% elif t.chain_status == "TAMPERED" %}
+                  <span class="badge b-tampered">⚠ tampered</span>
+                {% elif t.chain_status == "FAILED_SUBMIT" %}
+                  <span class="badge b-failed">✗ failed</span>
+                {% else %}
+                  <span class="badge b-pending"
+                        id="chain-{{ t.transaction_id }}"
+                        data-txid="{{ t.transaction_id }}">
+                    <span class="pdot"></span>
+                    {% if t.chain_status == "SUBMITTED" %}submitted{% else %}pending{% endif %}
+                  </span>
+                {% endif %}
+              {% endif %}
+            </div>
+
+            <div class="tx-amt {% if t.type == 'DEPOSIT' %}pos{% else %}neg{% endif %}">
+              {% if t.type == 'DEPOSIT' %}+{% else %}−{% endif %}${{ "%.2f"|format(t.amount) }}
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="no-tx">No transactions yet.</div>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+
+<style>
+.txp-shell { display: flex; flex-direction: column; min-height: calc(100vh - 60px); }
+.txp-header { background: var(--navy2); border-bottom: 1px solid var(--border); padding: 28px 48px; }
+.txp-header-inner { max-width: 800px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; }
+.txp-title { font-size: 24px; font-weight: 300; margin-bottom: 4px; }
+.txp-sub { font-size: 12px; color: var(--muted); }
+.back-link { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; text-decoration: none; transition: color 0.2s; }
+.back-link:hover { color: var(--text); }
+.txp-body { flex: 1; padding: 32px 48px; }
+.txp-body-inner { max-width: 800px; margin: 0 auto; }
+
+.tx-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+
+.tx-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--navy2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 20px;
+  transition: border-color 0.15s;
+}
+.tx-row:hover { border-color: rgba(255,255,255,0.14); }
+
+.tx-icon {
+  width: 36px; height: 36px;
+  border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.ic-green { background: rgba(61,184,138,0.1); color: var(--green); border: 1px solid rgba(61,184,138,0.15); }
+.ic-red   { background: rgba(232,25,60,0.1); color: var(--red); border: 1px solid rgba(232,25,60,0.15); }
+.ic-blue  { background: rgba(74,144,232,0.1); color: var(--blue); border: 1px solid rgba(74,144,232,0.15); }
+
+.tx-info { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.tx-type { font-size: 13px; font-weight: 500; color: var(--text); letter-spacing: 0.04em; }
+.tx-time { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+.tx-mid { display: flex; gap: 6px; align-items: center; }
+
+.badge {
+  font-size: 9px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 5px;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.b-bank     { background: rgba(255,255,255,0.05); color: var(--muted); border: 1px solid var(--border); }
+.b-confirmed{ background: rgba(61,184,138,0.1); color: var(--green); border: 1px solid rgba(61,184,138,0.2); }
+.b-pending  { background: rgba(200,152,26,0.08); color: var(--gold); border: 1px solid rgba(200,152,26,0.15); }
+.b-tampered { background: rgba(232,25,60,0.1); color: var(--red); border: 1px solid rgba(232,25,60,0.2); }
+.b-failed   { background: rgba(180,60,60,0.08); color: #b04040; border: 1px solid rgba(180,60,60,0.15); }
+
+.pdot { width: 5px; height: 5px; border-radius: 50%; background: var(--gold); display: inline-block; animation: pdot 1.8s ease-in-out infinite; }
+@keyframes pdot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.7)} }
+
+.tx-amt { font-family: var(--mono); font-size: 15px; font-weight: 500; flex-shrink: 0; }
+.tx-amt.pos { color: var(--green); }
+.tx-amt.neg { color: var(--red); }
+
+.no-tx { text-align: center; color: var(--muted); padding: 60px; font-size: 14px; }
+
+@media (max-width: 640px) {
+  .txp-header { padding: 20px; }
+  .txp-body { padding: 20px; }
+  .tx-mid { display: none; }
+}
+</style>
+
+<script>
+(function () {
+  const badges = document.querySelectorAll('[data-txid]');
+  if (!badges.length) return;
+  badges.forEach(function (badge) {
+    const txId = badge.dataset.txid;
+    const interval = setInterval(async function () {
+      try {
+        const resp = await fetch('/tx-status/' + txId);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const s = data.chainStatus;
+        if (s === 'CONFIRMED') {
+          badge.innerHTML = '⛓ confirmed';
+          badge.className = 'badge b-confirmed';
+          clearInterval(interval);
+        } else if (s === 'SUBMITTED') {
+          badge.innerHTML = '<span class="pdot"></span> submitted';
+        } else if (s === 'TAMPERED') {
+          badge.innerHTML = '⚠ tampered';
+          badge.className = 'badge b-tampered';
+          clearInterval(interval);
+        } else if (s === 'FAILED_SUBMIT') {
+          badge.innerHTML = '✗ failed';
+          badge.className = 'badge b-failed';
+          clearInterval(interval);
+        }
+      } catch (e) {}
+    }, 8000);
+  });
+})();
+</script>
+{% endblock %}

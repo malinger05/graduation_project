@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Balance — ATM{% endblock %}
+
+{% block topbar_center %}
+  <div class="topbar-divider"></div>
+  <span class="topbar-account">{{ session.get('account', '') if session else '' }}</span>
+{% endblock %}
+
+{% block topbar_right %}
+  <span class="topbar-who">{{ full_name }}</span>
+  <form method="post" action="{{ url_for('logout') }}">
+    <button type="submit" class="btn-ghost">Sign out</button>
+  </form>
+{% endblock %}
+
+{% block body %}
+<div class="bal-shell">
+  <div class="bal-card">
+    <p class="bal-label">Available balance</p>
+    <p class="bal-amount">${{ "%.2f"|format(balance) }}</p>
+    <p class="bal-account">Account {{ session.get('account', '') if session else '' }}</p>
+    <div class="bal-status">
+      <span class="live-dot"></span>
+      Live balance
+    </div>
+  </div>
+  <a href="{{ url_for('dashboard') }}" class="back-link">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    Back to menu
+  </a>
+</div>
+
+<style>
+.bal-shell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 60px);
+  padding: 40px 20px;
+  gap: 24px;
+}
+.bal-card {
+  background: var(--navy2);
+  border: 1px solid rgba(74,144,232,0.15);
+  border-radius: 20px;
+  padding: 52px 64px;
+  text-align: center;
+  width: 100%;
+  max-width: 420px;
+  position: relative;
+  overflow: hidden;
+}
+.bal-card::before {
+  content: '';
+  position: absolute;
+  width: 300px; height: 300px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(74,144,232,0.08) 0%, transparent 70%);
+  top: -100px; right: -100px;
+  pointer-events: none;
+}
+.bal-label { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 16px; font-weight: 500; }
+.bal-amount { font-size: 56px; font-weight: 300; letter-spacing: -0.02em; color: var(--text); margin-bottom: 10px; }
+.bal-account { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 24px; }
+.bal-status { display: inline-flex; align-items: center; gap: 7px; background: rgba(61,184,138,0.08); border: 1px solid rgba(61,184,138,0.18); border-radius: 100px; padding: 6px 14px; font-size: 11px; color: var(--green); letter-spacing: 0.05em; }
+.live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 2s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.8)} }
+.back-link { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; text-decoration: none; transition: color 0.2s; }
+.back-link:hover { color: var(--text); }
+</style>
+{% endblock %}

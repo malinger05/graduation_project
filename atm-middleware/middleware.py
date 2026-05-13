@@ -594,6 +594,20 @@ def get_transactions(x_session_token: str = Header(...)):
         raise HTTPException(resp.status_code, resp.text)
     return resp.json()
 
+@app.get("/atm/tx-status/{transaction_id}")
+def atm_tx_status(transaction_id: int, x_session_token: str = Header(...)):
+    _get_session(x_session_token)
+    try:
+        resp = requests.get(
+            f"{CORE_BANKING_URL}/admin/transactions/{transaction_id}",
+            headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
+            timeout=(3, 10),
+        )
+        if not resp.ok:
+            raise HTTPException(resp.status_code, resp.text)
+        return resp.json()
+    except requests.exceptions.ConnectionError:
+        raise HTTPException(503, "Cannot reach Core Banking")
 
 if __name__ == "__main__":
     import uvicorn

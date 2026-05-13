@@ -1,90 +1,260 @@
 {% extends "base.html" %}
-{% block title %}Account — ATM{% endblock %}
-{% block header_extra %}
-  <form method="post" action="{{ url_for('logout') }}" class="inline-form">
-    <span class="who">{{ full_name }}</span>
-    <button type="submit" class="btn ghost">Sign out</button>
+{% block title %}Dashboard — ATM{% endblock %}
+
+{% block topbar_center %}
+  <div class="topbar-divider"></div>
+  <span class="topbar-account">{{ session.get('account', '') if session else '' }}</span>
+{% endblock %}
+
+{% block topbar_right %}
+  <span class="topbar-who">{{ full_name }}</span>
+  <form method="post" action="{{ url_for('logout') }}">
+    <button type="submit" class="btn-ghost">Sign out</button>
   </form>
 {% endblock %}
+
 {% block body %}
-{% set qr_data = qr_popup or last_qr %}
-<section class="card balance-card">
-  <p class="muted">Available balance</p>
-  <p class="balance">${{ "%.2f"|format(balance) }}</p>
-</section>
+<div class="db-shell">
 
-<section class="card">
-  <h2 class="h2">Withdraw</h2>
-  <form method="post" action="{{ url_for('withdraw') }}" class="row">
-    <input type="number" name="amount" min="0.01" step="0.01" placeholder="Amount" required>
-    <button type="submit" class="btn primary">Withdraw</button>
-  </form>
-</section>
+  <!-- Hero balance strip -->
+  <div class="db-hero">
+    <div class="db-hero-inner">
+      <div class="db-balance-block">
+        <p class="db-balance-label">Available balance</p>
+        <p class="db-balance-amt">${{ "%.2f"|format(balance) }}</p>
+      </div>
+      <div class="db-hero-right">
+        {% if last_qr and last_qr.verify_url %}
+          <button type="button" class="qr-pill" id="tx-verify-open">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3zM17 17h3v3h-3zM14 20h3"/></svg>
+            Last QR
+          </button>
+        {% endif %}
+      </div>
+    </div>
+  </div>
 
-<section class="card">
-  <h2 class="h2">Deposit</h2>
-  <form method="post" action="{{ url_for('deposit') }}" class="row">
-    <input type="number" name="amount" min="0.01" step="0.01" placeholder="Amount" required>
-    <button type="submit" class="btn primary">Deposit</button>
-  </form>
-</section>
+  <!-- Action grid -->
+  <div class="db-grid">
 
-<section class="card">
-  <h2 class="h2">Recent activity</h2>
-  {% if last_qr and last_qr.verify_url %}
-    <button type="button" class="btn ghost qr-reopen" id="tx-verify-open">Show last QR again</button>
-  {% endif %}
-  {% if recent %}
-    <ul class="activity">
-      {% for t in recent %}
-        <li>
-          <span class="tag">{{ t.type }}</span>
-          <span class="amt">${{ "%.2f"|format(t.amount) }}</span>
-          <span class="tag">{{ t.status }}</span>
-          <span class="time">{{ t.timestamp[:19] }}</span>
-        </li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <p class="muted">No transactions yet.</p>
-  {% endif %}
-</section>
-
-{% if qr_data and qr_data.verify_url %}
-<div id="tx-verify-modal" class="modal-overlay {% if not qr_popup %}hidden{% endif %}" role="dialog" aria-modal="true" aria-labelledby="tx-verify-title">
-  <div class="modal-card">
-    <h2 id="tx-verify-title" class="h2">Verify transaction</h2>
-    <p class="muted modal-copy">
-      {{ qr_data.type }} ${{ "%.2f"|format(qr_data.amount) }} was logged on-chain.
-      Scan the QR code or open the link to verify.
-    </p>
-    <img class="qr-image" alt="QR code for blockchain transaction verification" src="{{ qr_data.qr_data_uri }}">
-    <a class="btn primary modal-link" href="{{ qr_data.verify_url }}" target="_blank" rel="noopener noreferrer">
-      Open verification link
+    <a href="{{ url_for('balance_page') }}" class="db-tile">
+      <div class="tile-icon blue">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+      </div>
+      <div class="tile-text">
+        <p class="tile-name">Account Balance</p>
+        <p class="tile-sub">Live balance</p>
+      </div>
+      <svg class="tile-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
     </a>
-    <button type="button" class="btn ghost modal-close" id="tx-verify-close">Close</button>
+
+    <a href="{{ url_for('deposit_page') }}" class="db-tile">
+      <div class="tile-icon green">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+      </div>
+      <div class="tile-text">
+        <p class="tile-name">Deposit</p>
+        <p class="tile-sub">Add funds</p>
+      </div>
+      <svg class="tile-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+    </a>
+
+    <a href="{{ url_for('transactions_page') }}" class="db-tile">
+      <div class="tile-icon navy">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      </div>
+      <div class="tile-text">
+        <p class="tile-name">Transactions</p>
+        <p class="tile-sub">Recent activity</p>
+      </div>
+      <svg class="tile-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+    </a>
+
+    <a href="{{ url_for('withdraw_page') }}" class="db-tile tile-red">
+      <div class="tile-icon red">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+      </div>
+      <div class="tile-text">
+        <p class="tile-name">Withdraw</p>
+        <p class="tile-sub">Get cash</p>
+      </div>
+      <svg class="tile-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+    </a>
+
+  </div>
+
+</div>
+
+<!-- QR Modal -->
+{% if last_qr and last_qr.verify_url %}
+{% set qr_data = last_qr %}
+<div id="tx-verify-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-top">
+      <h2 class="modal-title">Transaction on-chain</h2>
+      <button type="button" class="modal-x" id="tx-verify-close">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub">{{ qr_data.type }} · ${{ "%.2f"|format(qr_data.amount) }}</p>
+    <div class="qr-wrap"><img class="qr-img" src="{{ qr_data.qr_data_uri }}" alt="QR"></div>
+    <a class="modal-link-btn" href="{{ qr_data.verify_url }}" target="_blank" rel="noopener noreferrer">
+      Open on Etherscan
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+    </a>
   </div>
 </div>
-<script>
-  (function () {
-    const modal = document.getElementById("tx-verify-modal");
-    const closeBtn = document.getElementById("tx-verify-close");
-    const openBtn = document.getElementById("tx-verify-open");
-    if (!modal || !closeBtn) return;
-    const openModal = function () {
-      modal.classList.remove("hidden");
-    };
-    const closeModal = function () {
-      modal.classList.add("hidden");
-    };
-    if (openBtn) {
-      openBtn.addEventListener("click", openModal);
-    }
-    closeBtn.addEventListener("click", closeModal);
-    modal.addEventListener("click", function (event) {
-      if (event.target === modal) closeModal();
-    });
-  })();
-</script>
 {% endif %}
+
+<style>
+.db-shell { display: flex; flex-direction: column; min-height: calc(100vh - 60px); }
+
+/* hero */
+.db-hero {
+  background: var(--navy2);
+  border-bottom: 1px solid var(--border);
+  padding: 36px 48px;
+}
+.db-hero-inner {
+  max-width: 900px;
+  margin: 0 auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+.db-balance-label {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+.db-balance-amt {
+  font-size: 52px;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  line-height: 1;
+}
+
+.qr-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  font-family: var(--sans);
+  padding: 7px 13px;
+  border-radius: 100px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.qr-pill:hover { color: var(--text); border-color: rgba(255,255,255,0.2); }
+
+/* grid */
+.db-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 40px 48px;
+  gap: 14px;
+  align-content: start;
+}
+
+.db-tile {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  background: var(--navy2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px 22px;
+  text-decoration: none;
+  color: var(--text);
+  transition: all 0.2s;
+  cursor: pointer;
+}
+.db-tile:hover {
+  border-color: rgba(255,255,255,0.16);
+  background: #131f35;
+  transform: translateY(-1px);
+}
+
+.tile-red:hover { border-color: rgba(232,25,60,0.3); }
+
+.tile-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.tile-icon.blue  { background: rgba(74,144,232,0.12); color: var(--blue);  border: 1px solid rgba(74,144,232,0.2); }
+.tile-icon.green { background: rgba(61,184,138,0.1);  color: var(--green); border: 1px solid rgba(61,184,138,0.2); }
+.tile-icon.red   { background: rgba(232,25,60,0.1);   color: var(--red);   border: 1px solid rgba(232,25,60,0.2); }
+.tile-icon.navy  { background: rgba(255,255,255,0.05); color: var(--muted); border: 1px solid var(--border); }
+
+.tile-text { flex: 1; }
+.tile-name { font-size: 15px; font-weight: 500; color: var(--text); margin-bottom: 3px; }
+.tile-sub  { font-size: 11px; color: var(--muted); }
+.tile-arrow { color: var(--muted); flex-shrink: 0; }
+
+/* modal */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(4,8,16,0.85);
+  backdrop-filter: blur(8px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 200; padding: 20px;
+}
+.modal-overlay.hidden { display: none; }
+.modal-card {
+  background: var(--navy3);
+  border: 1px solid rgba(99,160,255,0.15);
+  border-radius: 20px;
+  padding: 28px;
+  width: 100%; max-width: 340px;
+}
+.modal-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.modal-title { font-size: 16px; font-weight: 500; }
+.modal-x { background: transparent; border: none; color: var(--muted); cursor: pointer; display: flex; border-radius: 6px; padding: 4px; }
+.modal-x:hover { color: var(--text); }
+.modal-sub { font-size: 11px; color: var(--muted); margin-bottom: 20px; }
+.qr-wrap { background: #fff; border-radius: 12px; padding: 16px; display: flex; justify-content: center; margin-bottom: 16px; }
+.qr-img { width: 100%; max-width: 220px; display: block; }
+.modal-link-btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: rgba(99,160,255,0.1); border: 1px solid rgba(99,160,255,0.2);
+  color: #63a0ff; border-radius: 10px; padding: 12px;
+  font-size: 13px; font-weight: 500; text-decoration: none;
+  transition: background 0.2s;
+}
+.modal-link-btn:hover { background: rgba(99,160,255,0.18); }
+
+@media (max-width: 640px) {
+  .db-grid { grid-template-columns: 1fr; padding: 24px 20px; }
+  .db-hero { padding: 28px 20px; }
+  .db-balance-amt { font-size: 40px; }
+}
+</style>
+
+<script>
+(function () {
+  const modal = document.getElementById("tx-verify-modal");
+  const closeBtn = document.getElementById("tx-verify-close");
+  const openBtn = document.getElementById("tx-verify-open");
+  if (!modal) return;
+  if (openBtn) openBtn.addEventListener("click", () => modal.classList.remove("hidden"));
+  if (closeBtn) closeBtn.addEventListener("click", () => modal.classList.add("hidden"));
+  modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
+})();
+</script>
 {% endblock %}

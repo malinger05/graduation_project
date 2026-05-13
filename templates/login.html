@@ -1,53 +1,273 @@
 {% extends "base.html" %}
 {% block title %}Sign in — ATM{% endblock %}
+
 {% block body %}
-<section class="card">
-  <h1>Welcome</h1>
-  <p class="muted">Enter your account number and PIN.</p>
-  {% if remaining_lock_seconds and remaining_lock_seconds > 0 %}
-  <div class="lockout-box" data-remaining-seconds="{{ remaining_lock_seconds }}">
-    <p class="lockout-label">Account lockout active</p>
-    <p class="lockout-time" id="lockout-timer">00:00</p>
-    <p class="lockout-note">You can retry login when this timer reaches 00:00.</p>
+<div class="login-shell">
+
+  <div class="login-left">
+    <div class="login-left-inner">
+      <p class="login-eyebrow">Secure Banking</p>
+      <h1 class="login-headline">Enter your<br>account details</h1>
+      <p class="login-sub">Your session is encrypted end-to-end.<br>Do not share your PIN with anyone.</p>
+      <div class="login-notice">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+        Do not let anybody see your PIN while entering it
+      </div>
+    </div>
   </div>
-  {% endif %}
-  <form method="post" action="{{ url_for('login') }}" class="stack">
-    <label>
-      Account number
-      <input type="text" name="account" inputmode="numeric" autocomplete="username" required>
-    </label>
-    <label>
-      PIN
-      <input type="password" name="pin" inputmode="numeric" autocomplete="current-password" required>
-    </label>
-    <button type="submit" class="btn primary">Sign in</button>
-  </form>
-</section>
-{% if remaining_lock_seconds and remaining_lock_seconds > 0 %}
+
+  <div class="login-right">
+    <div class="login-form-wrap">
+      <h2 class="form-title">Sign in</h2>
+
+      <form method="post" action="{{ url_for('login') }}" class="login-form">
+        <div class="field">
+          <label class="field-label">Account number</label>
+          <div class="field-input-wrap">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
+            <input type="text" name="account" placeholder="e.g. 100000001" autocomplete="off" required>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label">PIN</label>
+          <div class="field-input-wrap">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+            <input type="password" name="pin" placeholder="••••" maxlength="8" required>
+          </div>
+        </div>
+
+        {% if remaining_lock_seconds and remaining_lock_seconds > 0 %}
+          <div class="lock-warning">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            Account locked · try again in
+            <span class="lock-timer" id="lock-timer" data-seconds="{{ remaining_lock_seconds }}">
+              {{ "%02d"|format(remaining_lock_seconds // 60) }}:{{ "%02d"|format(remaining_lock_seconds % 60) }}
+            </span>
+          </div>
+        {% endif %}
+
+        {% with messages = get_flashed_messages() %}
+          {% if messages %}
+            {% for m in messages %}
+              <div class="form-error">{{ m }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <button type="submit" class="login-btn"
+          {% if remaining_lock_seconds and remaining_lock_seconds > 0 %}disabled{% endif %}>
+          Confirm
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+      </form>
+    </div>
+  </div>
+
+</div>
+
+<style>
+.login-shell {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: calc(100vh - 60px);
+}
+
+.login-left {
+  background: var(--red);
+  display: flex;
+  align-items: center;
+  padding: 60px 52px;
+  position: relative;
+  overflow: hidden;
+}
+
+.login-left::before {
+  content: '';
+  position: absolute;
+  width: 500px;
+  height: 500px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.1);
+  top: -200px;
+  right: -200px;
+  pointer-events: none;
+}
+
+.login-left::after {
+  content: '';
+  position: absolute;
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.08);
+  bottom: -100px;
+  left: -100px;
+  pointer-events: none;
+}
+
+.login-left-inner { position: relative; z-index: 1; }
+
+.login-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.6);
+  margin-bottom: 20px;
+  font-weight: 500;
+}
+
+.login-headline {
+  font-size: 42px;
+  font-weight: 300;
+  line-height: 1.15;
+  color: #fff;
+  margin-bottom: 20px;
+  letter-spacing: -0.01em;
+}
+
+.login-sub {
+  font-size: 14px;
+  color: rgba(255,255,255,0.6);
+  line-height: 1.7;
+  margin-bottom: 32px;
+}
+
+.login-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: rgba(0,0,0,0.15);
+  border-radius: 10px;
+  padding: 14px 16px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.7);
+  line-height: 1.5;
+}
+.login-notice svg { flex-shrink: 0; margin-top: 1px; }
+
+.login-right {
+  background: var(--navy2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 52px;
+}
+
+.login-form-wrap { width: 100%; max-width: 340px; }
+
+.form-title {
+  font-size: 22px;
+  font-weight: 400;
+  color: var(--text);
+  margin-bottom: 32px;
+}
+
+.login-form { display: flex; flex-direction: column; gap: 18px; }
+
+.field { display: flex; flex-direction: column; gap: 8px; }
+
+.field-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.field-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 16px;
+  transition: border-color 0.2s;
+}
+.field-input-wrap:focus-within {
+  border-color: rgba(255,255,255,0.2);
+  background: rgba(255,255,255,0.06);
+}
+.field-input-wrap svg { color: var(--muted); flex-shrink: 0; }
+
+.field-input-wrap input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 15px;
+  font-family: var(--mono);
+  padding: 14px 0;
+  width: 100%;
+  letter-spacing: 0.05em;
+}
+.field-input-wrap input::placeholder { color: #2a3848; }
+
+.lock-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(232,25,60,0.1);
+  border: 1px solid rgba(232,25,60,0.2);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: #e8193c;
+}
+
+.lock-timer {
+  font-family: var(--mono);
+  font-weight: 500;
+  margin-left: auto;
+}
+
+.form-error {
+  background: rgba(232,25,60,0.08);
+  border: 1px solid rgba(232,25,60,0.18);
+  color: #e07070;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+}
+
+.login-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--red);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 15px 20px;
+  font-size: 15px;
+  font-weight: 500;
+  font-family: var(--sans);
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+  margin-top: 4px;
+}
+.login-btn:hover { background: var(--red2); }
+.login-btn:active { transform: scale(0.98); }
+.login-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+@media (max-width: 700px) {
+  .login-shell { grid-template-columns: 1fr; }
+  .login-left { display: none; }
+}
+</style>
+
 <script>
-  (function() {
-    const lockoutBox = document.querySelector(".lockout-box");
-    const timerEl = document.getElementById("lockout-timer");
-    if (!lockoutBox || !timerEl) return;
-
-    let remaining = parseInt(lockoutBox.dataset.remainingSeconds || "0", 10);
-    if (Number.isNaN(remaining)) remaining = 0;
-
-    function format(seconds) {
-      const m = Math.floor(seconds / 60);
-      const s = seconds % 60;
-      return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
-    }
-
-    function tick() {
-      timerEl.textContent = format(Math.max(remaining, 0));
-      if (remaining <= 0) return;
-      remaining -= 1;
-      window.setTimeout(tick, 1000);
-    }
-
-    tick();
-  })();
+(function () {
+  const timer = document.getElementById('lock-timer');
+  if (!timer) return;
+  let s = parseInt(timer.dataset.seconds, 10);
+  const iv = setInterval(() => {
+    s--;
+    if (s <= 0) { clearInterval(iv); location.reload(); return; }
+    const m = Math.floor(s / 60);
+    timer.textContent = String(m).padStart(2,'0') + ':' + String(s % 60).padStart(2,'0');
+  }, 1000);
+})();
 </script>
-{% endif %}
 {% endblock %}
