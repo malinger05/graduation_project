@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Admin{% endblock %} — Core Banking</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --navy:  #0b1422;
+      --navy2: #111d30;
+      --red:   #e8193c;
+      --green: #3db88a;
+      --blue:  #4a90e8;
+      --gold:  #c8981a;
+      --border: rgba(255,255,255,0.08);
+      --text:  #e8eaf0;
+      --muted: #4a6080;
+      --sans:  'DM Sans', sans-serif;
+      --mono:  'DM Mono', monospace;
+    }
+    html, body { height: 100%; }
+    body { background: #0b1422; color: var(--text); font-family: var(--sans); display: flex; min-height: 100vh; }
+
+    /* sidebar */
+    .sidebar {
+      width: 220px; flex-shrink: 0;
+      background: #080e1a;
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      position: fixed; top: 0; left: 0; height: 100vh;
+      z-index: 100;
+    }
+    .sidebar-logo {
+      padding: 24px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 10px;
+    }
+    .sidebar-logo-icon {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: var(--red); display: flex; align-items: center; justify-content: center;
+    }
+    .sidebar-logo-text { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; color: var(--text); }
+    .sidebar-logo-sub  { font-size: 10px; color: var(--muted); margin-top: 1px; }
+
+    .sidebar-nav { flex: 1; padding: 16px 12px; display: flex; flex-direction: column; gap: 2px; }
+
+    .nav-item {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 12px; border-radius: 8px;
+      color: var(--muted); font-size: 13px; font-weight: 500;
+      text-decoration: none; transition: all 0.15s;
+    }
+    .nav-item:hover { background: rgba(255,255,255,0.05); color: var(--text); }
+    .nav-item.active { background: rgba(255,255,255,0.08); color: var(--text); }
+    .nav-item svg { flex-shrink: 0; }
+
+    .nav-section-label {
+      font-size: 10px; font-weight: 600; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--muted);
+      padding: 12px 12px 6px; margin-top: 8px;
+    }
+
+    .sidebar-footer {
+      padding: 16px 12px;
+      border-top: 1px solid var(--border);
+    }
+    .sidebar-user {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 10px;
+    }
+    .sidebar-avatar {
+      width: 32px; height: 32px; border-radius: 50%;
+      background: var(--navy2); border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 600; color: var(--text);
+    }
+    .sidebar-username { font-size: 12px; color: var(--text); font-weight: 500; }
+    .sidebar-role     { font-size: 10px; color: var(--muted); }
+
+    .logout-btn {
+      width: 100%; background: transparent;
+      border: 1px solid var(--border); color: var(--muted);
+      border-radius: 7px; padding: 8px; font-size: 12px;
+      font-family: var(--sans); cursor: pointer; transition: all 0.2s;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .logout-btn:hover { border-color: rgba(255,255,255,0.2); color: var(--text); }
+
+    /* main */
+    .main-area {
+      margin-left: 220px; flex: 1;
+      display: flex; flex-direction: column; min-height: 100vh;
+    }
+
+    .topbar {
+      height: 56px; background: #080e1a;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 28px; position: sticky; top: 0; z-index: 50;
+    }
+    .topbar-title { font-size: 14px; font-weight: 500; color: var(--text); }
+    .topbar-right { display: flex; align-items: center; gap: 12px; }
+    .core-banking-badge {
+      font-size: 11px; color: var(--muted);
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      border-radius: 6px; padding: 4px 10px;
+      font-family: var(--mono);
+    }
+
+    .content { flex: 1; padding: 28px; }
+
+    /* toast */
+    .toast-stack {
+      position: fixed; bottom: 24px; right: 24px;
+      display: flex; flex-direction: column; gap: 8px;
+      z-index: 999; width: 340px;
+    }
+    .toast {
+      background: var(--navy2);
+      border: 1px solid rgba(99,160,255,0.2);
+      color: #8ab4f8; padding: 12px 16px;
+      border-radius: 10px; font-size: 13px;
+      animation: toastIn 0.3s ease;
+    }
+    .toast.error { border-color: rgba(232,25,60,0.3); color: #ff8899; }
+    @keyframes toastIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+    /* cards */
+    .card {
+      background: #111d30; border: 1px solid var(--border);
+      border-radius: 14px; padding: 24px;
+    }
+    .card-title { font-size: 13px; font-weight: 500; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 16px; }
+
+    /* stat cards */
+    .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+    .stat-card { background: #111d30; border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+    .stat-label { font-size: 11px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+    .stat-value { font-size: 32px; font-weight: 300; color: var(--text); font-family: var(--mono); }
+    .stat-sub   { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+    /* table */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th {
+      text-align: left; padding: 10px 14px;
+      font-size: 10px; font-weight: 600; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    tbody tr { border-bottom: 1px solid rgba(255,255,255,0.04); transition: background 0.1s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: rgba(255,255,255,0.02); }
+    tbody td { padding: 12px 14px; color: var(--text); vertical-align: middle; }
+    .mono { font-family: var(--mono); font-size: 11px; }
+
+    /* badges */
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 9px; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; padding: 3px 8px; border-radius: 5px;
+    }
+    .b-confirmed  { background: rgba(61,184,138,0.1);  color: #3db88a; border: 1px solid rgba(61,184,138,0.2); }
+    .b-submitted  { background: rgba(74,144,232,0.1);  color: #4a90e8; border: 1px solid rgba(74,144,232,0.2); }
+    .b-pending    { background: rgba(200,152,26,0.08); color: #c8981a; border: 1px solid rgba(200,152,26,0.15); }
+    .b-failed     { background: rgba(180,60,60,0.1);   color: #e07070; border: 1px solid rgba(180,60,60,0.18); }
+    .b-tampered   { background: rgba(232,25,60,0.12);  color: #e8193c; border: 1px solid rgba(232,25,60,0.22); }
+    .b-active     { background: rgba(61,184,138,0.1);  color: #3db88a; border: 1px solid rgba(61,184,138,0.2); }
+    .b-deposit    { background: rgba(61,184,138,0.08); color: #3db88a; border: 1px solid rgba(61,184,138,0.15); }
+    .b-withdraw   { background: rgba(232,25,60,0.08);  color: #e8193c; border: 1px solid rgba(232,25,60,0.15); }
+    .b-transfer   { background: rgba(74,144,232,0.08); color: #4a90e8; border: 1px solid rgba(74,144,232,0.15); }
+
+    /* buttons */
+    .btn {
+      display: inline-flex; align-items: center; gap: 7px;
+      border-radius: 8px; padding: 9px 16px;
+      font-size: 13px; font-weight: 500; font-family: var(--sans);
+      cursor: pointer; border: none; text-decoration: none; transition: all 0.2s;
+    }
+    .btn-primary { background: var(--red); color: #fff; }
+    .btn-primary:hover { opacity: 0.88; }
+    .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+    .btn-ghost:hover { color: var(--text); border-color: rgba(255,255,255,0.2); }
+    .btn-sm { padding: 6px 11px; font-size: 11px; }
+
+    /* form */
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .field { display: flex; flex-direction: column; gap: 7px; }
+    .field.full { grid-column: 1 / -1; }
+    .field-label { font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+    .field input, .field select {
+      background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+      border-radius: 9px; padding: 11px 14px;
+      color: var(--text); font-size: 14px; font-family: var(--sans);
+      outline: none; transition: border-color 0.2s;
+    }
+    .field input:focus, .field select:focus { border-color: rgba(255,255,255,0.2); }
+    .field input::placeholder { color: #2a3848; }
+    .field select option { background: #111d30; }
+
+    /* section divider */
+    .section-divider {
+      display: flex; align-items: center; gap: 12px;
+      margin: 24px 0 20px; color: var(--muted); font-size: 11px;
+      letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .section-divider::before, .section-divider::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+
+    /* filter tabs */
+    .filter-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+    .filter-tab {
+      padding: 7px 14px; border-radius: 8px; font-size: 12px; font-weight: 500;
+      text-decoration: none; color: var(--muted);
+      border: 1px solid var(--border); transition: all 0.15s;
+    }
+    .filter-tab:hover { color: var(--text); border-color: rgba(255,255,255,0.18); }
+    .filter-tab.active { background: rgba(255,255,255,0.08); color: var(--text); border-color: rgba(255,255,255,0.15); }
+
+    /* etherscan link */
+    .chain-link { color: #4a90e8; text-decoration: none; font-family: var(--mono); font-size: 11px; }
+    .chain-link:hover { text-decoration: underline; }
+
+    /* page header */
+    .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+    .page-title  { font-size: 22px; font-weight: 300; color: var(--text); }
+    .page-sub    { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+    /* pulse */
+    .pdot { width: 5px; height: 5px; border-radius: 50%; background: #c8981a; display: inline-block; animation: pd 1.8s ease-in-out infinite; }
+    @keyframes pd { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    /* empty state */
+    .empty { text-align: center; padding: 60px; color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="sidebar-logo-icon">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+    </div>
+    <div>
+      <div class="sidebar-logo-text">Core Banking</div>
+      <div class="sidebar-logo-sub">Admin Panel</div>
+    </div>
+  </div>
+
+  <nav class="sidebar-nav">
+    <div class="nav-section-label">Overview</div>
+    <a href="{{ url_for('dashboard') }}" class="nav-item {% if request.endpoint == 'dashboard' %}active{% endif %}">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+      Dashboard
+    </a>
+
+    <div class="nav-section-label">Users</div>
+    <a href="{{ url_for('customers') }}" class="nav-item {% if request.endpoint == 'customers' %}active{% endif %}">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+      Customers
+    </a>
+    <a href="{{ url_for('register_customer') }}" class="nav-item {% if request.endpoint == 'register_customer' %}active{% endif %}">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+      Register User
+    </a>
+
+    <div class="nav-section-label">Finance</div>
+    <a href="{{ url_for('transactions') }}" class="nav-item {% if request.endpoint == 'transactions' %}active{% endif %}">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+      Transactions
+    </a>
+    <a href="{{ url_for('blockchain') }}" class="nav-item {% if request.endpoint == 'blockchain' %}active{% endif %}">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+      Blockchain
+    </a>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="sidebar-user">
+      <div class="sidebar-avatar">{{ session.get('admin_username', 'A')[0].upper() }}</div>
+      <div>
+        <div class="sidebar-username">{{ session.get('admin_username', 'Admin') }}</div>
+        <div class="sidebar-role">Administrator</div>
+      </div>
+    </div>
+    <form method="post" action="{{ url_for('logout') }}">
+      <button type="submit" class="logout-btn">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        Sign out
+      </button>
+    </form>
+  </div>
+</aside>
+
+<!-- Main -->
+<div class="main-area">
+  <div class="topbar">
+    <span class="topbar-title">{% block page_title %}{% endblock %}</span>
+    <div class="topbar-right">
+      <span class="core-banking-badge">Core Banking · localhost:8080</span>
+    </div>
+  </div>
+
+  <div class="content">
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="toast-stack" id="toast-stack">
+          {% for m in messages %}
+            <div class="toast {% if 'failed' in m.lower() or 'error' in m.lower() or 'invalid' in m.lower() %}error{% endif %}">{{ m }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block body %}{% endblock %}
+  </div>
+</div>
+
+<script>
+setTimeout(() => {
+  const s = document.getElementById('toast-stack');
+  if (s) { s.style.transition = 'opacity 0.5s'; s.style.opacity = '0'; }
+}, 5000);
+</script>
+</body>
+</html>

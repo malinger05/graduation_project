@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Transactions{% endblock %}
+{% block page_title %}Transactions{% endblock %}
+
+{% block body %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">All transactions</h1>
+    <p class="page-sub">{{ pending_count }} pending · {{ submitted_count }} submitted · {{ confirmed_count }} confirmed</p>
+  </div>
+</div>
+
+<div class="filter-tabs">
+  <a href="?status=ALL"           class="filter-tab {% if filter_status == 'ALL' %}active{% endif %}">All</a>
+  <a href="?status=PENDING_SUBMIT" class="filter-tab {% if filter_status == 'PENDING_SUBMIT' %}active{% endif %}">🔄 Pending</a>
+  <a href="?status=SUBMITTED"     class="filter-tab {% if filter_status == 'SUBMITTED' %}active{% endif %}">⏳ Submitted</a>
+  <a href="?status=CONFIRMED"     class="filter-tab {% if filter_status == 'CONFIRMED' %}active{% endif %}">⛓ Confirmed</a>
+  <a href="?status=FAILED_SUBMIT" class="filter-tab {% if filter_status == 'FAILED_SUBMIT' %}active{% endif %}">✗ Failed</a>
+  <a href="?status=TAMPERED"      class="filter-tab {% if filter_status == 'TAMPERED' %}active{% endif %}">⚠ Tampered</a>
+</div>
+
+<div class="card">
+  {% if transactions %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Account</th>
+          <th>Type</th>
+          <th>Amount</th>
+          <th>Balance after</th>
+          <th>Bank status</th>
+          <th>Chain status</th>
+          <th>Blockchain TX</th>
+          <th>Attempts</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in transactions %}
+        <tr>
+          <td><span class="mono" style="color:var(--muted);">#{{ t.transactionId }}</span></td>
+          <td><span class="mono">{{ t.accountNumber or '—' }}</span></td>
+          <td>
+            {% if t.transactionType in ['DEPOSIT', 'TRANSFER_IN'] %}
+              <span class="badge b-deposit">{{ t.transactionType }}</span>
+            {% elif t.transactionType in ['WITHDRAW', 'TRANSFER_OUT'] %}
+              <span class="badge b-withdraw">{{ t.transactionType }}</span>
+            {% else %}
+              <span class="badge b-transfer">{{ t.transactionType }}</span>
+            {% endif %}
+          </td>
+          <td><span class="mono" style="color:var(--text);font-weight:500;">${{ "%.2f"|format(t.amount|float) }}</span></td>
+          <td><span class="mono" style="color:var(--muted);">${{ "%.2f"|format(t.balanceAfter|float) }}</span></td>
+          <td><span class="badge b-active">APPROVED</span></td>
+          <td>
+            {% if t.chainStatus == 'CONFIRMED' %}
+              <span class="badge b-confirmed">⛓ confirmed</span>
+            {% elif t.chainStatus == 'SUBMITTED' %}
+              <span class="badge b-submitted"><span class="pdot"></span> submitted</span>
+            {% elif t.chainStatus == 'FAILED_SUBMIT' %}
+              <span class="badge b-failed">✗ failed</span>
+            {% elif t.chainStatus == 'TAMPERED' %}
+              <span class="badge b-tampered">⚠ tampered</span>
+            {% else %}
+              <span class="badge b-pending"><span class="pdot"></span> pending</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if t.blockchainTx %}
+              <a href="https://sepolia.etherscan.io/tx/{{ t.blockchainTx }}" target="_blank" rel="noopener" class="chain-link">
+                {{ t.blockchainTx[:10] }}…
+              </a>
+            {% else %}
+              <span style="color:var(--muted);font-size:12px;">—</span>
+            {% endif %}
+          </td>
+          <td><span class="mono" style="color:var(--muted);">{{ t.submitAttempts }}</span></td>
+          <td><span class="mono" style="color:var(--muted);">{{ t.createdAt[:19].replace('T',' ') if t.createdAt else '—' }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="empty">No transactions found for this filter.</div>
+  {% endif %}
+</div>
+{% endblock %}

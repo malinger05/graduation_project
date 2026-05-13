@@ -1,0 +1,300 @@
+{% extends "base.html" %}
+{% block title %}Customers{% endblock %}
+{% block page_title %}Customers{% endblock %}
+
+{% block body %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Customers</h1>
+    <p class="page-sub">{{ customers|length }} registered customer{% if customers|length != 1 %}s{% endif %}</p>
+  </div>
+  <a href="{{ url_for('register_customer') }}" class="btn btn-primary">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    Register customer
+  </a>
+</div>
+
+<div class="card">
+  {% if customers %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Phone</th>
+          <th>National ID</th>
+          <th>Date of Birth</th>
+          <th>Created</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in customers %}
+        <tr class="customer-row"
+            data-id="{{ c.customerId }}"
+            data-name="{{ c.firstName }} {{ c.lastName }}"
+            data-email="{{ c.email }}"
+            data-phone="{{ c.phoneNumber }}"
+            data-nationalid="{{ c.nationalId }}"
+            data-dob="{{ c.dateOfBirth }}"
+            data-created="{{ c.createdAt[:10] if c.createdAt else '—' }}">
+          <td><span class="mono" style="color:var(--muted);">#{{ c.customerId }}</span></td>
+          <td style="font-weight:500;">{{ c.firstName }} {{ c.lastName }}</td>
+          <td><span class="mono">{{ c.email }}</span></td>
+          <td><span class="mono">{{ c.phoneNumber }}</span></td>
+          <td><span class="mono">{{ c.nationalId }}</span></td>
+          <td><span class="mono">{{ c.dateOfBirth }}</span></td>
+          <td><span class="mono" style="color:var(--muted);">{{ c.createdAt[:10] if c.createdAt else '—' }}</span></td>
+          <td>
+            <span style="color:var(--muted);font-size:11px;display:flex;align-items:center;gap:4px;white-space:nowrap;">
+              Details
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="empty">No customers yet. <a href="{{ url_for('register_customer') }}" style="color:#4a90e8;">Register the first one →</a></div>
+  {% endif %}
+</div>
+
+<!-- ── Customer detail modal ── -->
+<div id="customer-modal" class="cm-overlay hidden">
+  <div class="cm-card">
+
+    <div class="cm-header">
+      <div class="cm-avatar" id="cm-avatar">JD</div>
+      <div style="flex:1;">
+        <h2 class="cm-name" id="cm-name">—</h2>
+        <p class="cm-id"   id="cm-id">Customer #—</p>
+      </div>
+      <button class="cm-close" id="cm-close" aria-label="Close">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div class="cm-section-label">Personal information</div>
+    <div class="cm-grid">
+      <div class="cm-field">
+        <p class="cm-field-label">Email</p>
+        <p class="cm-field-value mono" id="cm-email">—</p>
+      </div>
+      <div class="cm-field">
+        <p class="cm-field-label">Phone</p>
+        <p class="cm-field-value mono" id="cm-phone">—</p>
+      </div>
+      <div class="cm-field">
+        <p class="cm-field-label">National ID</p>
+        <p class="cm-field-value mono" id="cm-nationalid">—</p>
+      </div>
+      <div class="cm-field">
+        <p class="cm-field-label">Date of birth</p>
+        <p class="cm-field-value mono" id="cm-dob">—</p>
+      </div>
+      <div class="cm-field">
+        <p class="cm-field-label">Registered on</p>
+        <p class="cm-field-value mono" id="cm-created">—</p>
+      </div>
+    </div>
+
+    <div class="cm-section-label" style="margin-top:22px;">
+      Accounts
+      <span class="cm-loading" id="cm-loading">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="animation:spin 0.9s linear infinite;display:block;"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>
+        Loading…
+      </span>
+    </div>
+    <div id="cm-accounts"></div>
+
+  </div>
+</div>
+
+<style>
+.customer-row { cursor: pointer; }
+.customer-row:hover td { background: rgba(255,255,255,0.03); }
+
+/* overlay */
+.cm-overlay {
+  position: fixed; inset: 0;
+  background: rgba(4,8,16,0.82);
+  backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 300; padding: 20px;
+}
+.cm-overlay.hidden { display: none; }
+
+/* card */
+.cm-card {
+  background: #111d30;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 18px;
+  width: 100%; max-width: 560px;
+  max-height: 88vh; overflow-y: auto;
+  padding: 28px;
+  animation: slideUp 0.2s ease;
+}
+@keyframes slideUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+
+/* header */
+.cm-header {
+  display: flex; align-items: center; gap: 16px;
+  margin-bottom: 24px; padding-bottom: 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.cm-avatar {
+  width: 50px; height: 50px; border-radius: 13px;
+  background: rgba(232,25,60,0.14);
+  border: 1px solid rgba(232,25,60,0.24);
+  color: #e8193c; font-size: 17px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.cm-name { font-size: 18px; font-weight: 500; color: var(--text); margin-bottom: 3px; }
+.cm-id   { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+.cm-close {
+  background: transparent; border: none; color: var(--muted);
+  cursor: pointer; padding: 6px; border-radius: 8px;
+  display: flex; align-items: center; transition: color 0.15s;
+}
+.cm-close:hover { color: var(--text); }
+
+/* section label */
+.cm-section-label {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--muted);
+  margin-bottom: 14px;
+  display: flex; align-items: center; gap: 10px;
+}
+
+/* loading spinner */
+.cm-loading {
+  display: none; font-size: 11px; font-weight: 400;
+  letter-spacing: 0; text-transform: none;
+  color: var(--muted); align-items: center; gap: 6px;
+}
+.cm-loading.visible { display: flex; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* info grid */
+.cm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.cm-field-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; letter-spacing: 0.06em; text-transform: uppercase; }
+.cm-field-value { font-size: 13px; color: var(--text); }
+.cm-field-value.mono { font-family: var(--mono); font-size: 12px; }
+
+/* account cards */
+.acc-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 12px; padding: 18px;
+  margin-bottom: 10px;
+  transition: border-color 0.15s;
+}
+.acc-card:last-child { margin-bottom: 0; }
+.acc-card:hover { border-color: rgba(255,255,255,0.12); }
+
+.acc-top {
+  display: flex; align-items: center;
+  justify-content: space-between; margin-bottom: 14px;
+}
+.acc-number { font-family: var(--mono); font-size: 14px; font-weight: 500; color: var(--text); }
+
+.acc-badge {
+  font-size: 9px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; padding: 3px 9px; border-radius: 5px;
+}
+.acc-badge.active { background: rgba(61,184,138,0.1);  color: #3db88a; border: 1px solid rgba(61,184,138,0.2); }
+.acc-badge.frozen { background: rgba(74,144,232,0.1);  color: #4a90e8; border: 1px solid rgba(74,144,232,0.2); }
+.acc-badge.closed { background: rgba(180,60,60,0.1);   color: #e07070; border: 1px solid rgba(180,60,60,0.18); }
+
+.acc-balance-label { font-size: 10px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 4px; }
+.acc-balance { font-size: 30px; font-weight: 300; color: var(--text); font-family: var(--mono); letter-spacing: -0.01em; margin-bottom: 14px; }
+
+.acc-meta { display: flex; gap: 24px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.05); }
+.acc-meta-item {}
+.acc-meta-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 3px; }
+.acc-meta-val   { font-size: 12px; color: var(--text); font-family: var(--mono); }
+
+.acc-empty { text-align: center; padding: 28px; color: var(--muted); font-size: 13px; }
+</style>
+
+<script>
+(function () {
+  const modal   = document.getElementById('customer-modal');
+  const closeBtn = document.getElementById('cm-close');
+
+  closeBtn.addEventListener('click', () => modal.classList.add('hidden'));
+  modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') modal.classList.add('hidden'); });
+
+  document.querySelectorAll('.customer-row').forEach(row => {
+    row.addEventListener('click', () => open(row.dataset));
+  });
+
+  function open(d) {
+    const initials = d.name.trim().split(/\s+/).map(w => w[0]).join('').substring(0, 2).toUpperCase();
+    document.getElementById('cm-avatar').textContent     = initials;
+    document.getElementById('cm-name').textContent       = d.name;
+    document.getElementById('cm-id').textContent         = 'Customer #' + d.id;
+    document.getElementById('cm-email').textContent      = d.email    || '—';
+    document.getElementById('cm-phone').textContent      = d.phone    || '—';
+    document.getElementById('cm-nationalid').textContent = d.nationalid || '—';
+    document.getElementById('cm-dob').textContent        = d.dob      || '—';
+    document.getElementById('cm-created').textContent    = d.created  || '—';
+
+    document.getElementById('cm-accounts').innerHTML = '';
+    document.getElementById('cm-loading').classList.add('visible');
+    modal.classList.remove('hidden');
+
+    fetch('/admin/customer/' + d.id + '/accounts')
+      .then(r => r.json())
+      .then(accounts => {
+        document.getElementById('cm-loading').classList.remove('visible');
+        const box = document.getElementById('cm-accounts');
+        if (!accounts || accounts.length === 0) {
+          box.innerHTML = '<div class="acc-empty">No accounts linked to this customer.</div>';
+          return;
+        }
+        box.innerHTML = accounts.map(a => {
+          const statusKey   = (a.accountStatus || '').toLowerCase();
+          const balance     = parseFloat(a.balance || 0).toFixed(2);
+          const created     = (a.createdAt || '').substring(0, 10) || '—';
+          const accId       = a.accountId || '—';
+          return `
+            <div class="acc-card">
+              <div class="acc-top">
+                <span class="acc-number">${a.accountNumber || '—'}</span>
+                <span class="acc-badge ${statusKey}">${a.accountStatus || '—'}</span>
+              </div>
+              <p class="acc-balance-label">Available balance</p>
+              <p class="acc-balance">$${balance}</p>
+              <div class="acc-meta">
+                <div class="acc-meta-item">
+                  <p class="acc-meta-label">Account ID</p>
+                  <p class="acc-meta-val">#${accId}</p>
+                </div>
+                <div class="acc-meta-item">
+                  <p class="acc-meta-label">Opened</p>
+                  <p class="acc-meta-val">${created}</p>
+                </div>
+                <div class="acc-meta-item">
+                  <p class="acc-meta-label">Status</p>
+                  <p class="acc-meta-val">${a.accountStatus || '—'}</p>
+                </div>
+              </div>
+            </div>`;
+        }).join('');
+      })
+      .catch(() => {
+        document.getElementById('cm-loading').classList.remove('visible');
+        document.getElementById('cm-accounts').innerHTML =
+          '<div class="acc-empty" style="color:#e07070;">Could not load accounts.</div>';
+      });
+  }
+})();
+</script>
+{% endblock %}

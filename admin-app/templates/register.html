@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Register Customer{% endblock %}
+{% block page_title %}Register Customer{% endblock %}
+
+{% block body %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Register new customer</h1>
+    <p class="page-sub">Creates customer → account → sets ATM PIN in one flow</p>
+  </div>
+  <a href="{{ url_for('customers') }}" class="btn btn-ghost">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    Back
+  </a>
+</div>
+
+<div style="max-width:700px;">
+  <form method="post" action="{{ url_for('register_customer') }}">
+
+    <div class="card" style="margin-bottom:16px;">
+      <p class="card-title">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="display:inline;margin-right:6px;"><circle cx="12" cy="7" r="4"/><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/></svg>
+        Step 1 — Customer information
+      </p>
+      <div class="form-grid">
+        <div class="field">
+          <label class="field-label">First name</label>
+          <input type="text" name="firstName" value="{{ form.get('firstName','') if form else '' }}" placeholder="John" required>
+        </div>
+        <div class="field">
+          <label class="field-label">Last name</label>
+          <input type="text" name="lastName" value="{{ form.get('lastName','') if form else '' }}" placeholder="Doe" required>
+        </div>
+        <div class="field">
+          <label class="field-label">National ID</label>
+          <input type="text" name="nationalId" value="{{ form.get('nationalId','') if form else '' }}" placeholder="TR12345678901" required>
+        </div>
+        <div class="field">
+          <label class="field-label">Date of birth</label>
+          <input type="date" name="dateOfBirth" value="{{ form.get('dateOfBirth','') if form else '' }}" required>
+        </div>
+        <div class="field">
+          <label class="field-label">Email</label>
+          <input type="email" name="email" value="{{ form.get('email','') if form else '' }}" placeholder="john@example.com" required>
+        </div>
+        <div class="field">
+          <label class="field-label">Phone number</label>
+          <input type="text" name="phoneNumber" value="{{ form.get('phoneNumber','') if form else '' }}" placeholder="+905001234567" required>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <p class="card-title">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="display:inline;margin-right:6px;"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
+        Step 2 — Account setup
+      </p>
+      <div class="form-grid">
+        <div class="field">
+          <label class="field-label">Initial balance ($)</label>
+          <input type="number" name="initialBalance" value="{{ form.get('initialBalance','0') if form else '0' }}" min="0" step="0.01" placeholder="0.00" required>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:24px;">
+      <p class="card-title">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="display:inline;margin-right:6px;"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        Step 3 — ATM PIN
+      </p>
+      <div class="form-grid">
+        <div class="field">
+          <label class="field-label">PIN (4–8 digits)</label>
+          <input type="password" name="pin" placeholder="••••" minlength="4" maxlength="8" required>
+        </div>
+        <div class="field">
+          <label class="field-label" style="opacity:0;">spacer</label>
+          <p style="font-size:12px;color:var(--muted);padding-top:12px;">Customer uses this PIN to log in at the ATM. It is stored as a BCrypt hash.</p>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:12px;">
+      <button type="submit" class="btn btn-primary" style="flex:1;justify-content:center;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+        Register customer
+      </button>
+      <a href="{{ url_for('customers') }}" class="btn btn-ghost">Cancel</a>
+    </div>
+
+  </form>
+</div>
+{% endblock %}

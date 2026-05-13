@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Blockchain{% endblock %}
+{% block page_title %}Blockchain Contracts{% endblock %}
+
+{% block body %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Blockchain contracts</h1>
+    <p class="page-sub">{{ confirmed_count }} confirmed · {{ tampered_count }} tampered · Ethereum Sepolia testnet</p>
+  </div>
+</div>
+
+<div class="filter-tabs">
+  <a href="?type=ALL"      class="filter-tab {% if filter_type == 'ALL' %}active{% endif %}">All confirmed</a>
+  <a href="?type=TAMPERED" class="filter-tab {% if filter_type == 'TAMPERED' %}active{% endif %}">⚠ Tampered</a>
+</div>
+
+<div class="card">
+  {% if contracts %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>TX ID</th>
+          <th>Account</th>
+          <th>Type</th>
+          <th>Amount</th>
+          <th>Canonical hash</th>
+          <th>Blockchain TX</th>
+          <th>Chain status</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in contracts %}
+        <tr>
+          <td><span class="mono" style="color:var(--muted);">#{{ c.transactionId }}</span></td>
+          <td><span class="mono">{{ c.accountNumber or '—' }}</span></td>
+          <td>
+            {% if c.transactionType in ['DEPOSIT','TRANSFER_IN'] %}
+              <span class="badge b-deposit">{{ c.transactionType }}</span>
+            {% else %}
+              <span class="badge b-withdraw">{{ c.transactionType }}</span>
+            {% endif %}
+          </td>
+          <td><span class="mono" style="font-weight:500;">${{ "%.2f"|format(c.amount|float) }}</span></td>
+          <td>
+            {% if c.canonicalHash %}
+              <span class="mono" style="color:var(--muted);font-size:10px;" title="{{ c.canonicalHash }}">
+                {{ c.canonicalHash[:16] }}…
+              </span>
+            {% else %}
+              <span style="color:var(--muted);">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if c.blockchainTx %}
+              <a href="https://sepolia.etherscan.io/tx/{{ c.blockchainTx }}"
+                 target="_blank" rel="noopener" class="chain-link">
+                {{ c.blockchainTx[:12] }}…
+              </a>
+            {% else %}
+              <span style="color:var(--muted);">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if c.chainStatus == 'CONFIRMED' %}
+              <span class="badge b-confirmed">⛓ confirmed</span>
+            {% elif c.chainStatus == 'TAMPERED' %}
+              <span class="badge b-tampered">⚠ tampered</span>
+            {% else %}
+              <span class="badge b-pending">{{ c.chainStatus }}</span>
+            {% endif %}
+          </td>
+          <td><span class="mono" style="color:var(--muted);">{{ c.createdAt[:19].replace('T',' ') if c.createdAt else '—' }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="empty">No confirmed blockchain contracts yet. Transactions are logged as they confirm on Sepolia.</div>
+  {% endif %}
+</div>
+
+<div style="margin-top:16px; padding:14px 18px; background:rgba(74,144,232,0.06); border:1px solid rgba(74,144,232,0.15); border-radius:10px; font-size:12px; color:var(--muted); display:flex; align-items:flex-start; gap:10px;">
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4a90e8" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;margin-top:1px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+  <span>Each transaction's canonical hash is computed from the account number, type, amount, balance, reference ID and timestamp — then stored on Ethereum Sepolia via <code style="font-family:var(--mono);color:#4a90e8;">storeLog(hash)</code>. The tamper-check worker re-hashes each row every 5 minutes and flags any mismatch.</span>
+</div>
+{% endblock %}

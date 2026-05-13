@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+
+{% block body %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Overview</h1>
+    <p class="page-sub">Core Banking system status</p>
+  </div>
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <p class="stat-label">Total Customers</p>
+    <p class="stat-value">{{ total_customers }}</p>
+    <p class="stat-sub">Registered accounts</p>
+  </div>
+  <div class="stat-card">
+    <p class="stat-label">Pending Chain</p>
+    <p class="stat-value" style="color:#c8981a">{{ pending_count }}</p>
+    <p class="stat-sub">Awaiting submission</p>
+  </div>
+  <div class="stat-card">
+    <p class="stat-label">Submitted</p>
+    <p class="stat-value" style="color:#4a90e8">{{ submitted_count }}</p>
+    <p class="stat-sub">Awaiting confirmation</p>
+  </div>
+  <div class="stat-card">
+    <p class="stat-label">Confirmed</p>
+    <p class="stat-value" style="color:#3db88a">{{ confirmed_count }}</p>
+    <p class="stat-sub">On-chain verified</p>
+  </div>
+</div>
+
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+
+  <div class="card">
+    <p class="card-title">Quick actions</p>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <a href="{{ url_for('register_customer') }}" class="btn btn-primary" style="justify-content:space-between;">
+        Register new customer
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </a>
+      <a href="{{ url_for('transactions') }}" class="btn btn-ghost" style="justify-content:space-between;">
+        View all transactions
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </a>
+      <a href="{{ url_for('blockchain') }}" class="btn btn-ghost" style="justify-content:space-between;">
+        View blockchain contracts
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </a>
+      <a href="{{ url_for('customers') }}" class="btn btn-ghost" style="justify-content:space-between;">
+        View all customers
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </a>
+    </div>
+  </div>
+
+  <div class="card">
+    <p class="card-title">Blockchain pipeline</p>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-top:8px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#c8981a;display:inline-block;"></span>
+          <span style="font-size:13px;color:var(--text);">Pending submit</span>
+        </div>
+        <span style="font-family:var(--mono);font-size:14px;color:#c8981a;">{{ pending_count }}</span>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#4a90e8;display:inline-block;animation:pd 1.5s ease-in-out infinite;"></span>
+          <span style="font-size:13px;color:var(--text);">Submitted to chain</span>
+        </div>
+        <span style="font-family:var(--mono);font-size:14px;color:#4a90e8;">{{ submitted_count }}</span>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#3db88a;display:inline-block;"></span>
+          <span style="font-size:13px;color:var(--text);">Confirmed on-chain</span>
+        </div>
+        <span style="font-family:var(--mono);font-size:14px;color:#3db88a;">{{ confirmed_count }}</span>
+      </div>
+      <div style="height:1px;background:var(--border);margin:4px 0;"></div>
+      <p style="font-size:11px;color:var(--muted);">Worker runs every 30s (submit) · 60s (confirm) · 5min (tamper check)</p>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
