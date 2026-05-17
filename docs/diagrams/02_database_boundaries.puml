@@ -43,9 +43,9 @@ package "Middleware\n(owns operational state)" as PKG_MW {
   database "**middleware_db**" as MWDB {
     [idempotency_records]
     [session_state]
+    [transaction_logs]
     [correlation_logs]
     [routing_config]
-    [transaction_logs]
   }
 }
 

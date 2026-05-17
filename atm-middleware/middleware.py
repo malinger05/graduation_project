@@ -59,6 +59,7 @@ import blockchain_worker
 import db
 import idempotency
 import sessions
+import retention
 import transaction_logs
 from admin_client import AdminClient
 from canonical import hash_transaction
@@ -111,6 +112,7 @@ def _get_admin_client() -> AdminClient | None:
 async def lifespan(app: FastAPI):
     threading.Thread(target=_atomicity_monitor, daemon=True).start()
     threading.Thread(target=_session_cleanup, daemon=True).start()
+    threading.Thread(target=_retention_cleanup, daemon=True).start()
 
     print(f"[Middleware] Layer 2 started on port 8000")
     print(f"[Middleware] Core Banking: {CORE_BANKING_URL}")
@@ -121,6 +123,14 @@ async def lifespan(app: FastAPI):
     try:
         if db.init_db():
             print(f"[Middleware] Operational DB: {db.get_db_url()}")
+            if config.TRANSACTION_LOG_RETENTION_DAYS > 0:
+                print(
+                    f"[Middleware] Retention: transaction_logs older than "
+                    f"{config.TRANSACTION_LOG_RETENTION_DAYS} days purged every "
+                    f"{config.RETENTION_CLEANUP_INTERVAL_SECONDS}s"
+                )
+            else:
+                print("[Middleware] Retention: disabled (TRANSACTION_LOG_RETENTION_DAYS=0)")
         else:
             print("[Middleware] Operational DB: disabled (MIDDLEWARE_DB_URL unset)")
     except Exception as e:
@@ -294,6 +304,23 @@ def _session_cleanup() -> None:
         n = sessions.cleanup_expired()
         if n:
             print(f"[Sessions] Evicted {n} idle session(s)")
+
+
+def _retention_cleanup() -> None:
+    """Purge old transaction_logs and expired idempotency rows on a schedule."""
+    interval = config.RETENTION_CLEANUP_INTERVAL_SECONDS
+    days     = config.TRANSACTION_LOG_RETENTION_DAYS
+    while True:
+        time.sleep(interval)
+        if not db.is_enabled():
+            continue
+        try:
+            counts = retention.run_retention(days)
+            removed = {k: v for k, v in counts.items() if v > 0}
+            if removed:
+                print(f"[Retention] Purged rows: {removed}")
+        except Exception as e:
+            print(f"[Retention] Cleanup failed: {e}")
 
 
 # ── In-memory lockout tracker ─────────────────────────────────────────────────

@@ -4,7 +4,9 @@ transaction_logs.py  —  Append-only audit trail for middleware HTTP traffic.
 "What happened, when, and who did it?"
 
 One row per handled /atm/* request (success, error, or idempotency cache hit).
-Never updates or deletes rows. No-op when the middleware DB is disabled.
+Rows are append-only at write time; old rows are removed by retention.py
+according to TRANSACTION_LOG_RETENTION_DAYS. No-op when the middleware DB
+is disabled.
 """
 
 from __future__ import annotations

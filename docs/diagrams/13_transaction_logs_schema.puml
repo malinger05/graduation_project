@@ -1,0 +1,60 @@
+@startuml transaction_logs_schema
+title transaction_logs — Table Schema
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam classAttributeFontSize 12
+
+skinparam class {
+  BackgroundColor #FAFAFA
+  BorderColor #444444
+  HeaderBackgroundColor #E8E8E8
+  FontStyle bold
+}
+
+class transaction_logs <<(T,#4488CC) table>> {
+  .. **Primary Key** ..
+  🔑 log_id : String (PK)\nUUID hex
+  .. **Tracing (optional)** ..
+  correlation_id : String [nullable]
+  .. **When / who / where** ..
+  created_at : DateTime(tz) [NOT NULL]
+  account_number : String [nullable]
+  channel : String [NOT NULL]\ndefault ATM_WEB
+  .. **HTTP context** ..
+  http_method : String [NOT NULL]
+  endpoint : String [NOT NULL]
+  idempotency_key : String [nullable]
+  .. **Payloads (sanitized)** ..
+  request_body : JSONB [nullable]
+  response_status_code : Integer [NOT NULL]
+  response_body : JSONB [nullable]
+  .. **Outcome** ..
+  outcome : String [NOT NULL]\nsuccess | error | cached
+  duration_ms : Integer [nullable]
+  error_message : String [nullable]
+}
+
+note right of transaction_logs
+  **Append-only**
+  Rows are INSERTed only;
+  never UPDATE or DELETE.
+
+  **Requires** MIDDLEWARE_DB_URL
+  If DB disabled → log_event is a no-op.
+
+  **Secrets redacted** before insert
+  (pin, jwt, session token, etc.)
+end note
+
+note bottom of transaction_logs
+  **Not a ledger** — Core Banking owns transactions.
+  This table records what the **middleware**
+  saw on each /atm/* HTTP call for audit and ops.
+
+  **correlation_id** column exists for future
+  cross-service tracing; not populated yet.
+end note
+
+@enduml

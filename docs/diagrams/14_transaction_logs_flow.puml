@@ -1,0 +1,66 @@
+@startuml transaction_logs_flow
+title transaction_logs — Audit Write Path
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam sequenceArrowFontSize 11
+skinparam sequenceParticipantPadding 20
+
+actor "ATM Client" as ATM
+participant "Middleware\n(/atm/* handler)" as MW
+participant "transaction_logs.py" as TL
+database "middleware_db\n(transaction_logs)" as DB
+
+== Successful deposit (first request) ==
+
+ATM -> MW : POST /atm/deposit\nX-Session-Token, Idempotency-Key, {amount}
+
+MW -> MW : sessions.get()\nidempotency.begin() → proceed
+
+MW -> MW : Forward to Core Banking,\nhash + finish idempotency
+
+MW -> MW : _audit(\n  outcome=**success**,\n  endpoint, status, bodies,\n  duration_ms, channel)
+
+MW -> TL : log_event(...)
+
+TL -> TL : sanitize(request_body)\nsanitize(response_body)
+
+TL -> DB : INSERT transaction_logs\nlog_id = uuid4().hex
+
+DB --> TL : OK
+
+MW --> ATM : 200 OK
+
+== Idempotency replay (cached) ==
+
+ATM -> MW : POST /atm/deposit\n(same Idempotency-Key)
+
+MW -> MW : idempotency.begin() → cached response
+
+MW -> MW : _audit(outcome=**cached**)\n(no Core Banking call)
+
+MW -> TL : log_event(...)
+TL -> DB : INSERT (new audit row)
+
+MW --> ATM : 200 OK (cached body)
+
+== Handler raises HTTPException ==
+
+ATM -> MW : POST /atm/deposit\n(expired session)
+
+MW -> MW : sessions.get() → 401
+
+MW -> TL : exception handler → log_event(\n  outcome=**error**)
+
+TL -> DB : INSERT
+
+MW --> ATM : 401
+
+note over DB
+  Each handled /atm/* attempt
+  produces **one new row**,
+  including cache hits (cached).
+end note
+
+@enduml

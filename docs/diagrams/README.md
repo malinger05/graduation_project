@@ -14,6 +14,8 @@ Source files for the diagrams used in the middleware chapter of the report.
 | `10_session_get_logic.puml` | Session management | Decision logic inside `sessions.get()`. |
 | `11_session_continue_flow.puml` | Session management | Phase 2b: idle prompt → `/atm/session/continue` → `touch()` (no Core Banking). |
 | `12_session_touch_logic.puml` | Session management | Decision logic inside `sessions.touch()`. |
+| `13_transaction_logs_schema.puml` | Transaction audit log | `transaction_logs` table columns and rules. |
+| `14_transaction_logs_flow.puml` | Transaction audit log | How `_audit` / errors write append-only rows. |
 
 ## Rendering
 

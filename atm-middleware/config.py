@@ -65,3 +65,11 @@ WORKER_CONFIRM_BATCH_SIZE       = _int("WORKER_CONFIRM_BATCH_SIZE", 25)
 WORKER_TAMPER_BATCH_SIZE        = _int("WORKER_TAMPER_BATCH_SIZE",  100)
 WORKER_TAMPER_LOOKBACK_HOURS    = _int("WORKER_TAMPER_LOOKBACK_HOURS", 24)
 WORKER_MAX_SUBMIT_ATTEMPTS      = _int("WORKER_MAX_SUBMIT_ATTEMPTS", 8)
+
+# ── Retention (middleware DB) ────────────────────────────────────────────────
+
+# Delete transaction_logs rows older than this many days. Set to 0 to disable.
+TRANSACTION_LOG_RETENTION_DAYS = _int("TRANSACTION_LOG_RETENTION_DAYS", 90)
+
+# How often the background retention job runs (default: every hour).
+RETENTION_CLEANUP_INTERVAL_SECONDS = _int("RETENTION_CLEANUP_INTERVAL_SECONDS", 3600)
