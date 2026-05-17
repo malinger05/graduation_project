@@ -35,8 +35,8 @@ def get_secret(
         except Exception:
             value = None
 
-    if not value and allow_env_fallback:
-        env_val = os.environ.get(name, "")
+    if not value and allow_env_fallback and name in os.environ:
+        env_val = os.environ[name]
         value = env_val.strip() if isinstance(env_val, str) else env_val
 
     if required and not value:

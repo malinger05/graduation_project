@@ -1,0 +1,81 @@
+@startuml session_flow
+title Session Management — Login, Authenticated Request, Logout
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam sequenceArrowFontSize 11
+skinparam sequenceParticipantPadding 20
+
+actor "ATM Client" as ATM
+participant "Middleware" as MW
+database "middleware_db\n(session_state)" as DB
+participant "Core Banking" as CB
+
+== Phase 1 — Login ==
+
+ATM -> MW : POST /atm/login\n{accountNumber, pin}
+
+MW -> CB : POST /atm/login\n{accountNumber, pin}
+CB --> MW : 200 OK\n{token (JWT), accountId, balance, customerName}
+
+MW -> DB : INSERT session_state\nsession_token = random hex(32)\njwt, account_id, account_number,\nbalance, customer_name,\nlast_active = now, created_at = now
+DB --> MW : OK
+
+MW --> ATM : 200 OK\n{sessionToken, customerName, balance, ...}\n**JWT is NOT returned to ATM**
+
+== Phase 2 — Deposit (authenticated) ==
+
+ATM -> MW : POST /atm/deposit\nX-Session-Token: <token>\nIdempotency-Key: ...\n{amount: 500}
+
+MW -> DB : SELECT by session_token
+DB --> MW : row found, not expired
+
+MW -> DB : UPDATE last_active = now
+DB --> MW : OK
+
+note right of MW
+  Middleware reads jwt from row
+  and forwards to Core Banking
+end note
+
+MW -> CB : POST /accounts/{account_id}/deposit\nAuthorization: Bearer <jwt>\n{amountDeposit: 500}
+CB --> MW : 200 OK\n{transactionId, balanceAfter, ...}
+
+MW -> DB : UPDATE balance = balanceAfter
+DB --> MW : OK
+
+MW --> ATM : 200 OK\n{status: SUCCESS, newBalance, ...}
+
+== Phase 2b — Session continue (optional) ==
+
+ATM -> MW : POST /atm/session/continue\nX-Session-Token: <token>
+
+MW -> DB : UPDATE last_active = now\n(touch only — no banking call)
+DB --> MW : OK
+
+MW --> ATM : 200 OK\n{status: ok}
+
+note right of MW
+  Customer chose another transaction;
+  extends the server idle window
+  (SESSION_TTL_SECONDS, default 30 min)
+  without deposit/withdraw.
+  See Figure 11 for full UI → middleware flow.
+end note
+
+== Phase 3 — Logout ==
+
+ATM -> MW : POST /atm/logout\nX-Session-Token: <token>
+
+MW -> DB : DELETE session_state\nWHERE session_token = <token>
+DB --> MW : OK
+
+MW --> ATM : 200 OK\n{status: logged_out}
+
+note right of MW #FFEEEE
+  Same token cannot be reused.
+  Next request → HTTP 401.
+end note
+
+@enduml

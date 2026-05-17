@@ -171,5 +171,54 @@
       if (s) s.style.opacity = '0';
     }, 4000);
   </script>
+
+  {% if session.get('account') %}
+  <div id="idle-session-root" style="display:none"
+    data-idle-ms="{{ atm_idle_prompt_ms }}"
+    data-prompt-timeout-ms="{{ atm_prompt_timeout_ms }}"
+    data-continue-url="{{ url_for('session_continue') }}"
+    data-logout-url="{{ url_for('logout') }}">
+  </div>
+  <div id="idle-session-modal" class="idle-modal-overlay hidden" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="idle-session-title">
+    <div class="idle-modal-card">
+      <h2 id="idle-session-title" class="idle-modal-title">Would you like another transaction?</h2>
+      <p class="idle-modal-sub">You have been idle. Choose within <span id="idle-session-countdown">60</span> seconds or you will be signed out.</p>
+      <div class="idle-modal-actions">
+        <button type="button" id="idle-session-yes" class="idle-btn idle-btn-yes">Yes, continue</button>
+        <button type="button" id="idle-session-no" class="idle-btn idle-btn-no">No, sign out</button>
+      </div>
+    </div>
+  </div>
+  <style>
+    .idle-modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(4, 8, 16, 0.88);
+      backdrop-filter: blur(8px);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 500; padding: 20px;
+    }
+    .idle-modal-overlay.hidden { display: none; }
+    .idle-modal-card {
+      background: var(--navy3);
+      border: 1px solid rgba(99, 160, 255, 0.2);
+      border-radius: 16px;
+      padding: 28px 24px;
+      max-width: 400px; width: 100%;
+      text-align: center;
+    }
+    .idle-modal-title { font-size: 18px; font-weight: 500; margin-bottom: 10px; }
+    .idle-modal-sub { font-size: 13px; color: var(--muted); margin-bottom: 22px; line-height: 1.5; }
+    .idle-modal-actions { display: flex; flex-direction: column; gap: 10px; }
+    .idle-btn {
+      padding: 12px 16px; border-radius: 10px; font-size: 14px; font-family: var(--sans);
+      cursor: pointer; border: 1px solid var(--border); transition: all 0.2s;
+    }
+    .idle-btn-yes { background: rgba(61, 184, 138, 0.15); color: var(--green); border-color: rgba(61, 184, 138, 0.35); }
+    .idle-btn-yes:hover { background: rgba(61, 184, 138, 0.25); }
+    .idle-btn-no { background: transparent; color: var(--muted); }
+    .idle-btn-no:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.2); }
+  </style>
+  <script src="{{ url_for('static', filename='idle-session.js') }}"></script>
+  {% endif %}
 </body>
 </html>

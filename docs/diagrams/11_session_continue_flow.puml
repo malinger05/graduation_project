@@ -1,0 +1,72 @@
+@startuml session_continue_flow
+title Session Continue (Phase 2b) — Extend Idle Time Without Banking
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam sequenceArrowFontSize 11
+skinparam sequenceParticipantPadding 20
+
+actor "Customer" as C
+participant "ATM UI\n(Flask + browser)" as UI
+participant "Middleware" as MW
+database "middleware_db\n(session_state)" as DB
+
+note over UI
+  **Client timers** (keychain / customer_app):
+  ATM_IDLE_PROMPT_SECONDS = 120 → show dialog
+  ATM_PROMPT_TIMEOUT_SECONDS = 60 → auto sign-out
+end note
+
+== Idle prompt ==
+
+C -> UI : No input for 120 seconds
+UI -> C : Modal: "Another transaction?"
+note right of UI
+  No Core Banking call.
+  No idempotency key.
+end note
+
+alt Customer clicks **Yes, continue** within 60s
+
+  C -> UI : Yes
+  UI -> UI : POST /session/continue\n(credentials: same-origin)
+
+  UI -> MW : POST /atm/session/continue\nX-Session-Token: <token>
+
+  MW -> MW : sessions.touch(token)
+
+  MW -> DB : SELECT session_state\nWHERE session_token = <token>
+  DB --> MW : row
+
+  alt Session valid (not past SESSION_TTL)
+
+    MW -> DB : UPDATE last_active = now
+    DB --> MW : OK
+
+    MW --> UI : 200 OK\n{status: "ok"}
+    UI --> C : Stay logged in;\nreset UI idle timer
+
+    note right of MW
+      Only **last_active** changes.
+      JWT, balance, account fields unchanged.
+      **Core Banking is not called.**
+    end note
+
+  else Missing or expired session
+
+    MW --> UI : **401** Invalid or expired session
+    UI --> C : Redirect to login
+
+  end
+
+else Customer clicks **No** or 60s elapse
+
+  C -> UI : No / timeout
+  UI -> MW : POST /atm/logout\nX-Session-Token
+  MW -> DB : DELETE session row
+  UI --> C : Signed out
+
+end
+
+@enduml

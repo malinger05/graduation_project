@@ -1,0 +1,35 @@
+@startuml session_get_logic
+title sessions.get() — Decision Logic (Protected Endpoints)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam ActivityBackgroundColor #FAFAFA
+skinparam ActivityBorderColor #444444
+skinparam DiamondBackgroundColor #FFFDE8
+skinparam DiamondBorderColor #444444
+
+start
+
+:Receive X-Session-Token from request header;
+
+:Look up session_state by session_token;
+
+if (row found?) then (yes)
+
+  if (now - last_active > SESSION_TTL?\ndefault 1800s / 30 min) then (yes — expired)
+    :DELETE expired row;
+    #FFCCCC:raise **HTTP 401**\n"Invalid or expired session.\nPlease log in again.";
+    stop
+  else (no — still valid)
+    :UPDATE last_active = now;
+    #CCFFCC:return session dict\n(jwt, account_id, account_number,\nbalance, customer_name);
+    stop
+  endif
+
+else (no)
+  #FFCCCC:raise **HTTP 401**\n"Invalid or expired session.\nPlease log in again.";
+  stop
+endif
+
+@enduml

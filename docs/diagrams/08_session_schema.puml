@@ -1,0 +1,56 @@
+@startuml session_schema
+title session_state — Table Schema
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam classAttributeFontSize 12
+
+skinparam class {
+  BackgroundColor #FAFAFA
+  BorderColor #444444
+  HeaderBackgroundColor #E8E8E8
+  FontStyle bold
+}
+
+class session_state <<(T,#4488CC) table>> {
+  .. **Primary Key** ..
+  🔑 session_token : String (PK)
+  .. **Core Banking context (server-side only)** ..
+  jwt : String [NOT NULL]
+  account_id : Integer [NOT NULL]
+  account_number : String [NOT NULL]
+  .. **Cached for ATM responses** ..
+  balance : Float [NOT NULL]
+  customer_name : String [NOT NULL]
+  .. **TTL / idle tracking** ..
+  last_active : DateTime(tz) [NOT NULL]
+  created_at : DateTime(tz) [NOT NULL]
+}
+
+note right of session_state
+  **Token generation:**
+  secrets.token_hex(32) at login
+
+  **ATM sends:** X-Session-Token header
+  **ATM never receives:** jwt (stays in DB)
+
+  **Idle expiry:**
+  SESSION_TTL_SECONDS = 900 (15 min)
+  last_active refreshed on get() and touch()
+
+  **Background cleanup:**
+  _session_cleanup thread every 60s
+  deletes rows where last_active < cutoff
+end note
+
+note bottom of session_state
+  **NOT stored:** PIN, password, credentials
+  **No foreign keys** — self-contained operational table
+
+  **balance** is a cache updated via
+  update_balance() after deposit/withdraw;
+  Core Banking remains source of truth.
+end note
+
+@enduml

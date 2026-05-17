@@ -7,22 +7,19 @@ Authenticates with the X-Service-Token header. The shared secret matches
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import requests
+
+import config
 
 
 class AdminClient:
     def __init__(self,
                  core_banking_url: str | None = None,
                  service_token: str | None = None):
-        self.base_url = (core_banking_url
-                         or os.environ.get("CORE_BANKING_URL", "http://localhost:8080")
-                         ).rstrip("/")
-        self.service_token = (service_token
-                              or os.environ.get("MIDDLEWARE_SERVICE_TOKEN", "")
-                              ).strip()
+        self.base_url = (core_banking_url or config.CORE_BANKING_URL).rstrip("/")
+        self.service_token = (service_token or config.SERVICE_TOKEN).strip()
 
     def _headers(self) -> dict:
         if not self.service_token:

@@ -1,0 +1,65 @@
+@startuml layered_architecture
+title ATM System — Layered Architecture
+
+' ── Styling ──────────────────────────────────────────────────────────────────
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam ArrowColor #333333
+skinparam ArrowFontSize 11
+
+skinparam rectangle {
+  BackgroundColor #FAFAFA
+  BorderColor #444444
+  FontStyle bold
+}
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor #777777
+}
+skinparam database {
+  BackgroundColor #EFEFEF
+  BorderColor #444444
+}
+skinparam cloud {
+  BackgroundColor #F4F4F4
+  BorderColor #444444
+}
+skinparam actor {
+  BackgroundColor #FFFFFF
+  BorderColor #444444
+}
+
+' ── Nodes ────────────────────────────────────────────────────────────────────
+actor "ATM Client\n(Customer)" as ATM
+
+rectangle "**Layer 2 — Middleware**\nFastAPI · port 8000" as MW {
+  component "Auth &\nSessions"        as MWauth
+  component "Idempotency"             as MWidem
+  component "ACK /\nAtomicity Timer"  as MWack
+  component "Canonical\nHashing"      as MWhash
+  component "Reconciliation\nWorker"  as MWworker
+}
+
+rectangle "**Layer 3 — Core Banking**\nSpring Boot · port 8080" as CB {
+  component "Account\nService"     as CBacc
+  component "Transaction\nService" as CBtx
+  component "Admin API"            as CBadmin
+}
+
+database "**Core Banking DB**\nPostgreSQL\naccounts · transactions · customers" as CBDB
+database "**Middleware DB**\nPostgreSQL\nidempotency · sessions · logs · routing" as MWDB
+
+cloud "**Ethereum Sepolia**\nSmart Contract\n(storeLog / verifyLog)" as ETH
+
+' ── Edges ────────────────────────────────────────────────────────────────────
+ATM  -down->  MW  : "HTTPS / JSON\nlogin · deposit · withdraw · ack"
+MW   -down->  CB  : "HTTP / JSON + JWT\nforwarded ops · admin patches"
+CB   -down->  CBDB: "JDBC\nbanking data"
+MW   -right-> MWDB: "SQLAlchemy\noperational state"
+MW   -right-> ETH : "HTTPS RPC\ntx submit · verify"
+
+' Keep layout tidy
+CBDB -[hidden]right- MWDB
+
+@enduml

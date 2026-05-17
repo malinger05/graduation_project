@@ -2,27 +2,32 @@
 middleware.py  —  Layer 2
 Runs on port 8000.
 
-Pure bridge: ATM → Middleware → Core Banking (Spring Boot).
+Bridge: ATM → Middleware → Core Banking (Spring Boot).
 
 Responsibilities:
   - Forward login / deposit / withdraw to Core Banking
   - Track login lockouts in memory
-  - Manage sessions in memory (with TTL expiry)
+  - Manage login sessions (Postgres when configured, else in-memory)
   - Hash the confirmed transaction data and log it to Ethereum Sepolia
   - PATCH the canonical hash + blockchainTx back to Core Banking
   - ACK / atomicity timer for withdrawals (in memory)
   - Run blockchain reconciliation worker threads (submit-retry, confirm-poll,
     tamper-check) — all going through Spring Boot's /admin/transactions/*
+  - Persist middleware-side operational state (idempotency, sessions,
+    transaction audit log, etc.) in its own Postgres, separate from Core Banking's.
 
 Intentionally NOT here:
-  - No database. No PostgreSQL. Core Banking owns all data.
+  - No banking data. Core Banking owns accounts, balances, transactions.
   - No balance calculation. Core Banking returns the new balance.
   - No transaction records. Core Banking stores transactions.
+
+The middleware's own database holds ONLY operational state that the middleware
+itself owns end-to-end (idempotency, sessions, transaction_logs; correlation logs /
+routing config still planned). It never duplicates banking data.
 """
 
 import inspect
 import os
-import secrets
 import sys
 import threading
 import time
@@ -31,7 +36,10 @@ from datetime import datetime, timezone
 
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException
+from typing import Any
+
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 if not hasattr(inspect, "getargspec"):
@@ -43,29 +51,32 @@ from web3 import Web3
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
-from secrets_manager import get_secret  # noqa: E402
-
-import blockchain_worker
-from admin_client import AdminClient
-from canonical import hash_transaction
 
 load_dotenv()
 
-# ── Config ────────────────────────────────────────────────────────────────────
+import config  # noqa: E402  — keychain first; .env is optional fallback
+import blockchain_worker
+import db
+import idempotency
+import sessions
+import transaction_logs
+from admin_client import AdminClient
+from canonical import hash_transaction
 
-CORE_BANKING_URL      = os.environ.get("CORE_BANKING_URL", "http://localhost:8080").rstrip("/")
-SERVICE_TOKEN         = get_secret(
-    "MIDDLEWARE_SERVICE_TOKEN", "", allow_env_fallback=True
-).strip()
-ACK_TIMEOUT_SECONDS   = int(os.environ.get("ACK_TIMEOUT_SECONDS", "30"))
-SESSION_TTL_SECONDS   = int(os.environ.get("SESSION_TTL_SECONDS", "1800"))  # 30 min
-LOCKOUT_MAX_ATTEMPTS  = int(os.environ.get("LOCKOUT_MAX_ATTEMPTS", "3"))
+# ── Config (from keychain via config.py) ──────────────────────────────────────
+
+CORE_BANKING_URL      = config.CORE_BANKING_URL
+SERVICE_TOKEN         = config.SERVICE_TOKEN
+ACK_TIMEOUT_SECONDS   = config.ACK_TIMEOUT_SECONDS
+SESSION_TTL_SECONDS   = config.SESSION_TTL_SECONDS
+sessions.configure(SESSION_TTL_SECONDS)
+LOCKOUT_MAX_ATTEMPTS  = config.LOCKOUT_MAX_ATTEMPTS
 LOCKOUT_MINUTES       = [5, 10, 15]  # progressive lockout durations
 
-CONTRACT_ADDRESS  = get_secret("CONTRACT_ADDRESS", "").strip()
-ETH_PRIVATE_KEY   = get_secret("ETH_PRIVATE_KEY", "").strip()
-RPC_URL           = os.environ.get("ETH_RPC_URL", "https://ethereum-sepolia.publicnode.com").strip()
-RPC_FALLBACK_URLS = [u.strip() for u in os.environ.get("ETH_RPC_FALLBACK_URLS", "").split(",") if u.strip()]
+CONTRACT_ADDRESS  = config.CONTRACT_ADDRESS
+ETH_PRIVATE_KEY   = config.ETH_PRIVATE_KEY
+RPC_URL           = config.RPC_URL
+RPC_FALLBACK_URLS = config.RPC_FALLBACK_URLS
 
 CONTRACT_ABI = [
     {
@@ -103,7 +114,20 @@ async def lifespan(app: FastAPI):
 
     print(f"[Middleware] Layer 2 started on port 8000")
     print(f"[Middleware] Core Banking: {CORE_BANKING_URL}")
-    print(f"[Middleware] No database — Core Banking owns all data.")
+
+    # Initialize the middleware's own DB (idempotency records, etc.). If
+    # MIDDLEWARE_DB_URL is unset, persistence is skipped and the middleware
+    # runs with the same in-memory-only behaviour it had before.
+    try:
+        if db.init_db():
+            print(f"[Middleware] Operational DB: {db.get_db_url()}")
+        else:
+            print("[Middleware] Operational DB: disabled (MIDDLEWARE_DB_URL unset)")
+    except Exception as e:
+        print(f"[Middleware] Operational DB: FAILED to initialize: {e}")
+        raise
+
+    print("[Middleware] Banking data lives in Core Banking; middleware DB holds operational state only.")
 
     # Spawn the blockchain reconciliation worker (submit-retry / confirm-poll /
     # tamper-check) ONLY if everything it needs is configured. Otherwise log and
@@ -128,6 +152,57 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ATM Middleware — Layer 2", lifespan=lifespan)
+
+
+@app.exception_handler(HTTPException)
+async def _audit_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
+    """Log failed /atm/* requests; re-raise as JSON for the client."""
+    if request.url.path.startswith("/atm"):
+        detail = exc.detail
+        transaction_logs.log_event(
+            endpoint=request.url.path,
+            http_method=request.method,
+            outcome="error",
+            response_status_code=exc.status_code,
+            response_body={"detail": detail},
+            error_message=str(detail),
+        )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+def _resolve_channel(x_channel: str | None) -> str:
+    if x_channel and x_channel.strip():
+        return x_channel.strip()
+    return transaction_logs.DEFAULT_CHANNEL
+
+
+def _audit(
+    *,
+    endpoint: str,
+    http_method: str,
+    outcome: str,
+    status_code: int,
+    started: float,
+    account_number: str | None = None,
+    channel: str = transaction_logs.DEFAULT_CHANNEL,
+    idempotency_key: str | None = None,
+    request_body: dict | None = None,
+    response_body: Any = None,
+    error_message: str | None = None,
+) -> None:
+    transaction_logs.log_event(
+        endpoint=endpoint,
+        http_method=http_method,
+        outcome=outcome,
+        response_status_code=status_code,
+        account_number=account_number,
+        channel=channel,
+        idempotency_key=idempotency_key,
+        request_body=request_body,
+        response_body=response_body,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        error_message=error_message,
+    )
 
 
 # ── Blockchain ────────────────────────────────────────────────────────────────
@@ -212,39 +287,13 @@ def _verify_log_on_chain(canonical_hash: str) -> bool:
         return False
 
 
-# ── In-memory session store ───────────────────────────────────────────────────
-# Maps session_token → {jwt, account_id, account_number, balance,
-#                        customer_name, last_active}
-
-_sessions:      dict[str, dict] = {}
-_sessions_lock: threading.Lock  = threading.Lock()
-
-
-def _get_session(token: str) -> dict:
-    with _sessions_lock:
-        s = _sessions.get(token)
-        if not s:
-            raise HTTPException(401, "Invalid or expired session. Please log in again.")
-        s["last_active"] = time.time()
-        return s
-
-
-def _remove_session(token: str) -> None:
-    with _sessions_lock:
-        _sessions.pop(token, None)
-
-
 def _session_cleanup() -> None:
     """Evict sessions idle longer than SESSION_TTL_SECONDS. Runs every 60s."""
     while True:
         time.sleep(60)
-        cutoff = time.time() - SESSION_TTL_SECONDS
-        with _sessions_lock:
-            stale = [k for k, v in _sessions.items() if v.get("last_active", 0) < cutoff]
-            for k in stale:
-                del _sessions[k]
-        if stale:
-            print(f"[Sessions] Evicted {len(stale)} idle session(s)")
+        n = sessions.cleanup_expired()
+        if n:
+            print(f"[Sessions] Evicted {n} idle session(s)")
 
 
 # ── In-memory lockout tracker ─────────────────────────────────────────────────
@@ -361,41 +410,59 @@ def health():
 
 
 @app.post("/atm/login")
-def atm_login(req: LoginRequest):
-    # 1. Check lockout (in memory — no DB)
+def atm_login(
+    req: LoginRequest,
+    x_channel: str | None = Header(None, alias="X-Channel"),
+):
+    started = time.perf_counter()
+    channel = _resolve_channel(x_channel)
+    req_audit = {"accountNumber": req.accountNumber, "pin": "***REDACTED***"}
+
     lockout = _check_lockout(req.accountNumber)
     if lockout:
-        return {"status": "locked", **lockout}
+        body = {"status": "locked", **lockout}
+        _audit(
+            endpoint="/atm/login", http_method="POST", outcome="success",
+            status_code=200, started=started, account_number=req.accountNumber,
+            channel=channel, request_body=req_audit, response_body=body,
+        )
+        return body
 
-    # 2. Forward to Core Banking
     resp = _cb_post("/atm/login", {"accountNumber": req.accountNumber, "pin": req.pin})
 
     if resp.status_code == 401:
         result = _record_failed_attempt(req.accountNumber)
+        _audit(
+            endpoint="/atm/login", http_method="POST", outcome="success",
+            status_code=200, started=started, account_number=req.accountNumber,
+            channel=channel, request_body=req_audit, response_body=result,
+        )
         return result
 
     if resp.status_code == 403:
-        return {"status": "locked", "remaining_lock_seconds": 0, "lock_minutes": 0}
+        body = {"status": "locked", "remaining_lock_seconds": 0, "lock_minutes": 0}
+        _audit(
+            endpoint="/atm/login", http_method="POST", outcome="success",
+            status_code=200, started=started, account_number=req.accountNumber,
+            channel=channel, request_body=req_audit, response_body=body,
+        )
+        return body
 
     if not resp.ok:
         raise HTTPException(502, f"Core Banking error: {resp.text}")
 
-    # 3. Successful — reset lockout, create session
     data = resp.json()
     _reset_lockout(req.accountNumber)
 
-    session_token = secrets.token_hex(32)
-    with _sessions_lock:
-        _sessions[session_token] = {
-            "jwt":            data["token"],
-            "account_id":     int(data["accountId"]),
-            "account_number": req.accountNumber,
-            "balance":        float(data.get("balance", 0)),
-            "customer_name":  data.get("customerName", "Customer"),
-            "last_active":    time.time(),
-        }
+    session_token = sessions.create(
+        jwt=data["token"],
+        account_id=int(data["accountId"]),
+        account_number=req.accountNumber,
+        balance=float(data.get("balance", 0)),
+        customer_name=data.get("customerName", "Customer"),
+    )
 
-    return {
+    body = {
         "status":        "ok",
         "sessionToken":  session_token,
         "customerName":  data.get("customerName", "Customer"),
@@ -407,12 +474,53 @@ def atm_login(req: LoginRequest):
             "balance":    float(data.get("balance", 0)),
         },
     }
+    safe_body = {**body, "sessionToken": "***REDACTED***"}
+    _audit(
+        endpoint="/atm/login", http_method="POST", outcome="success",
+        status_code=200, started=started, account_number=req.accountNumber,
+        channel=channel, request_body=req_audit, response_body=safe_body,
+    )
+    return body
 
 
 @app.post("/atm/logout")
-def atm_logout(x_session_token: str = Header(...)):
-    _remove_session(x_session_token)
-    return {"status": "logged_out"}
+def atm_logout(
+    x_session_token: str = Header(...),
+    x_channel: str | None = Header(None, alias="X-Channel"),
+):
+    started = time.perf_counter()
+    channel = _resolve_channel(x_channel)
+    account_number = None
+    try:
+        account_number = sessions.get(x_session_token)["account_number"]
+    except HTTPException:
+        pass
+    sessions.remove(x_session_token)
+    body = {"status": "logged_out"}
+    _audit(
+        endpoint="/atm/logout", http_method="POST", outcome="success",
+        status_code=200, started=started, account_number=account_number,
+        channel=channel, response_body=body,
+    )
+    return body
+
+
+@app.post("/atm/session/continue")
+def atm_session_continue(
+    x_session_token: str = Header(...),
+    x_channel: str | None = Header(None, alias="X-Channel"),
+):
+    """Customer chose another transaction — extend the idle session window."""
+    started = time.perf_counter()
+    channel = _resolve_channel(x_channel)
+    if not sessions.touch(x_session_token):
+        raise HTTPException(401, "Invalid or expired session. Please log in again.")
+    body = {"status": "ok"}
+    _audit(
+        endpoint="/atm/session/continue", http_method="POST", outcome="success",
+        status_code=200, started=started, channel=channel, response_body=body,
+    )
+    return body
 
 
 def _hash_and_persist(transaction_id: int,
@@ -457,12 +565,31 @@ def _hash_and_persist(transaction_id: int,
 
 
 @app.post("/atm/deposit")
-def atm_deposit(req: AmountRequest, x_session_token: str = Header(...)):
-    session       = _get_session(x_session_token)
+def atm_deposit(
+    req: AmountRequest,
+    x_session_token: str = Header(...),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    x_channel: str | None = Header(None, alias="X-Channel"),
+):
+    started = time.perf_counter()
+    channel = _resolve_channel(x_channel)
+    session       = sessions.get(x_session_token)
     account_id    = session["account_id"]
     account_number = session["account_number"]
     old_balance   = session["balance"]
     jwt           = session["jwt"]
+
+    cached = idempotency.begin(
+        idempotency_key, account_number, "/atm/deposit", req.model_dump()
+    )
+    if cached is not None:
+        _audit(
+            endpoint="/atm/deposit", http_method="POST", outcome="cached",
+            status_code=200, started=started, account_number=account_number,
+            channel=channel, idempotency_key=idempotency_key,
+            request_body=req.model_dump(), response_body=cached,
+        )
+        return cached
 
     # 1. Forward to Core Banking — it validates, updates balance, saves transaction
     resp = _cb_post(f"/accounts/{account_id}/deposit", {"amountDeposit": req.amount}, jwt)
@@ -475,7 +602,7 @@ def atm_deposit(req: AmountRequest, x_session_token: str = Header(...)):
     new_balance = float(result.get("balanceAfter", 0))
     ref_id      = str(result.get("referenceId", ""))
     created_at  = str(result.get("createdAt", datetime.now(timezone.utc).isoformat()))
-    session["balance"] = new_balance
+    sessions.update_balance(x_session_token, new_balance)
 
     # 3. Hash confirmed data, log to chain, persist hash+tx into Core Banking
     c_hash, bc_tx = _hash_and_persist(
@@ -488,7 +615,7 @@ def atm_deposit(req: AmountRequest, x_session_token: str = Header(...)):
         created_at=created_at,
     )
 
-    return {
+    response = {
         "status":        "SUCCESS",
         "amount":        req.amount,
         "oldBalance":    old_balance,
@@ -501,14 +628,45 @@ def atm_deposit(req: AmountRequest, x_session_token: str = Header(...)):
         "message":       "" if bc_tx else "Blockchain sync unavailable — worker will retry.",
     }
 
+    # 4. Cache the response so a retry of the same Idempotency-Key returns
+    #    the exact same payload without re-charging the account.
+    idempotency.finish(idempotency_key, account_number, response)
+
+    _audit(
+        endpoint="/atm/deposit", http_method="POST", outcome="success",
+        status_code=200, started=started, account_number=account_number,
+        channel=channel, idempotency_key=idempotency_key,
+        request_body=req.model_dump(), response_body=response,
+    )
+    return response
+
 
 @app.post("/atm/withdraw")
-def atm_withdraw(req: AmountRequest, x_session_token: str = Header(...)):
-    session        = _get_session(x_session_token)
+def atm_withdraw(
+    req: AmountRequest,
+    x_session_token: str = Header(...),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    x_channel: str | None = Header(None, alias="X-Channel"),
+):
+    started = time.perf_counter()
+    channel = _resolve_channel(x_channel)
+    session        = sessions.get(x_session_token)
     account_id     = session["account_id"]
     account_number = session["account_number"]
     old_balance    = session["balance"]
     jwt            = session["jwt"]
+
+    cached = idempotency.begin(
+        idempotency_key, account_number, "/atm/withdraw", req.model_dump()
+    )
+    if cached is not None:
+        _audit(
+            endpoint="/atm/withdraw", http_method="POST", outcome="cached",
+            status_code=200, started=started, account_number=account_number,
+            channel=channel, idempotency_key=idempotency_key,
+            request_body=req.model_dump(), response_body=cached,
+        )
+        return cached
 
     # 1. Forward to Core Banking — it validates funds, subtracts balance, saves transaction
     resp = _cb_post(f"/accounts/{account_id}/withdraw", {"amountWithdraw": req.amount}, jwt)
@@ -523,7 +681,7 @@ def atm_withdraw(req: AmountRequest, x_session_token: str = Header(...)):
     new_balance = float(result.get("balanceAfter", 0))
     ref_id      = str(result.get("referenceId", ""))
     created_at  = str(result.get("createdAt", datetime.now(timezone.utc).isoformat()))
-    session["balance"] = new_balance
+    sessions.update_balance(x_session_token, new_balance)
 
     # 3. Hash confirmed data, log to chain, persist hash+tx into Core Banking
     c_hash, bc_tx = _hash_and_persist(
@@ -546,7 +704,7 @@ def atm_withdraw(req: AmountRequest, x_session_token: str = Header(...)):
         "deadline":   time.time() + ACK_TIMEOUT_SECONDS,
     }
 
-    return {
+    response = {
         "middlewareTxId": ack_id,
         "transactionId":  tx_id,
         "status":         "SUCCESS",
@@ -560,26 +718,68 @@ def atm_withdraw(req: AmountRequest, x_session_token: str = Header(...)):
         "message":        "Dispense cash now, then call /atm/ack",
     }
 
+    # 5. Cache the response — retries with the same Idempotency-Key get the
+    #    same middlewareTxId / transactionId without a second debit.
+    idempotency.finish(idempotency_key, account_number, response)
+
+    _audit(
+        endpoint="/atm/withdraw", http_method="POST", outcome="success",
+        status_code=200, started=started, account_number=account_number,
+        channel=channel, idempotency_key=idempotency_key,
+        request_body=req.model_dump(), response_body=response,
+    )
+    return response
+
 
 @app.post("/atm/ack")
-def atm_ack(req: AckRequest, x_session_token: str = Header(...)):
+def atm_ack(
+    req: AckRequest,
+    x_session_token: str = Header(...),
+    x_channel: str | None = Header(None, alias="X-Channel"),
+):
     """ATM calls this after physically dispensing cash — cancels the rollback timer."""
-    _get_session(x_session_token)
+    started = time.perf_counter()
+    channel = _resolve_channel(x_channel)
+    session = sessions.get(x_session_token)
     _pending_acks.pop(req.middlewareTxId, None)
-    return {"status": "CONFIRMED", "middlewareTxId": req.middlewareTxId}
+    body = {"status": "CONFIRMED", "middlewareTxId": req.middlewareTxId}
+    _audit(
+        endpoint="/atm/ack", http_method="POST", outcome="success",
+        status_code=200, started=started,
+        account_number=session["account_number"], channel=channel,
+        request_body=req.model_dump(), response_body=body,
+    )
+    return body
 
 
 @app.get("/atm/balance")
-def get_balance(x_session_token: str = Header(...)):
+def get_balance(
+    x_session_token: str = Header(...),
+    x_channel: str | None = Header(None, alias="X-Channel"),
+):
     """Returns the cached balance. For a live balance, call Core Banking directly."""
-    session = _get_session(x_session_token)
-    return {"balance": session["balance"], "accountNumber": session["account_number"]}
+    started = time.perf_counter()
+    channel = _resolve_channel(x_channel)
+    session = sessions.get(x_session_token)
+    body = {"balance": session["balance"], "accountNumber": session["account_number"]}
+    _audit(
+        endpoint="/atm/balance", http_method="GET", outcome="success",
+        status_code=200, started=started,
+        account_number=session["account_number"], channel=channel,
+        response_body=body,
+    )
+    return body
 
 
 @app.get("/atm/transactions")
-def get_transactions(x_session_token: str = Header(...)):
-    """Proxy to Core Banking transaction history — middleware has no DB of its own."""
-    session    = _get_session(x_session_token)
+def get_transactions(
+    x_session_token: str = Header(...),
+    x_channel: str | None = Header(None, alias="X-Channel"),
+):
+    """Proxy to Core Banking transaction history."""
+    started = time.perf_counter()
+    channel = _resolve_channel(x_channel)
+    session    = sessions.get(x_session_token)
     account_id = session["account_id"]
     jwt        = session["jwt"]
     try:
@@ -592,11 +792,25 @@ def get_transactions(x_session_token: str = Header(...)):
         raise HTTPException(503, "Cannot reach Core Banking")
     if not resp.ok:
         raise HTTPException(resp.status_code, resp.text)
-    return resp.json()
+    body = resp.json()
+    _audit(
+        endpoint="/atm/transactions", http_method="GET", outcome="success",
+        status_code=200, started=started,
+        account_number=session["account_number"], channel=channel,
+        response_body=body,
+    )
+    return body
+
 
 @app.get("/atm/tx-status/{transaction_id}")
-def atm_tx_status(transaction_id: int, x_session_token: str = Header(...)):
-    _get_session(x_session_token)
+def atm_tx_status(
+    transaction_id: int,
+    x_session_token: str = Header(...),
+    x_channel: str | None = Header(None, alias="X-Channel"),
+):
+    started = time.perf_counter()
+    channel = _resolve_channel(x_channel)
+    session = sessions.get(x_session_token)
     try:
         resp = requests.get(
             f"{CORE_BANKING_URL}/admin/transactions/{transaction_id}",
@@ -605,7 +819,14 @@ def atm_tx_status(transaction_id: int, x_session_token: str = Header(...)):
         )
         if not resp.ok:
             raise HTTPException(resp.status_code, resp.text)
-        return resp.json()
+        body = resp.json()
+        _audit(
+            endpoint=f"/atm/tx-status/{transaction_id}", http_method="GET",
+            outcome="success", status_code=200, started=started,
+            account_number=session["account_number"], channel=channel,
+            response_body=body,
+        )
+        return body
     except requests.exceptions.ConnectionError:
         raise HTTPException(503, "Cannot reach Core Banking")
 

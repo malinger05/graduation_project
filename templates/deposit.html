@@ -32,6 +32,7 @@
     <div class="tx-body-inner">
 
       <form method="post" action="{{ url_for('deposit') }}" id="deposit-form">
+        <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
         <div class="amount-field">
           <div class="amount-input-wrap green-focus">
             <span class="amount-symbol">$</span>
@@ -114,5 +115,13 @@ function setAmount(val) {
   document.querySelectorAll('.quick-btn').forEach(b => b.classList.remove('selected'));
   event.target.classList.add('selected');
 }
+(function () {
+  const form = document.getElementById('deposit-form');
+  if (!form) return;
+  form.addEventListener('submit', function () {
+    const btn = form.querySelector('.tx-confirm');
+    if (btn) btn.disabled = true;
+  });
+})();
 </script>
 {% endblock %}

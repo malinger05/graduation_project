@@ -1,0 +1,60 @@
+@startuml idempotency_begin_logic
+title idempotency.begin() — Decision Logic
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam ActivityBackgroundColor #FAFAFA
+skinparam ActivityBorderColor #444444
+skinparam DiamondBackgroundColor #FFFDE8
+skinparam DiamondBorderColor #444444
+
+start
+
+:Receive Idempotency-Key from request header;
+
+if (key is None OR\nmiddleware DB disabled?) then (yes)
+  :return **None**\n(skip idempotency,\nprocess normally);
+  stop
+else (no)
+endif
+
+:Compute **request_fingerprint**\nSHA-256 of (endpoint, account_number, request_body);
+
+:Look up record by\n**(account_number, idempotency_key)**;
+
+if (record found?) then (yes)
+
+  if (record.expires_at <= now?) then (yes — expired)
+    :DELETE the expired record;
+    note right: Key expired (>24h).\nTreat as fresh request.
+  elseif (status == \"in_progress\" AND\n(now - created_at) > 60s?) then (yes — stale)
+    :DELETE the stale record;
+    note right: Previous attempt\nprobably crashed.\nAllow retry.
+  else (record is still valid)
+
+    if (fingerprint != stored fingerprint?) then (yes — mismatch)
+      #FFCCCC:raise **HTTP 422**\n"Key used with different body";
+      stop
+    endif
+
+    if (status == \"completed\"?) then (yes)
+      #CCFFCC:return **cached response_body**\n(caller returns this directly,\nCore Banking is NOT called);
+      stop
+    else (status == \"in_progress\", still fresh)
+      #FFDDCC:raise **HTTP 409**\n"Request still being processed.\nRetry shortly.";
+      stop
+    endif
+
+  endif
+
+else (no — not found)
+endif
+
+:INSERT new record\nstatus = \"in_progress\"\nfingerprint = computed SHA-256\nexpires_at = now + 24 hours;
+
+:return **None**\n(caller proceeds to call Core Banking\nand must call finish() when done);
+
+stop
+
+@enduml

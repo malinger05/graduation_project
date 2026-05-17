@@ -1,0 +1,53 @@
+@startuml idempotency_flow
+title Idempotency — First Request vs Retry (Deposit Example)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam sequenceArrowFontSize 11
+skinparam sequenceParticipantPadding 20
+
+actor "ATM Client" as ATM
+participant "Middleware\n(/atm/deposit)" as MW
+database "middleware_db\n(idempotency_records)" as DB
+participant "Core Banking" as CB
+
+== First request (Idempotency-Key: \"abc-123\") ==
+
+ATM -> MW : POST /atm/deposit\nIdempotency-Key: abc-123\n{amount: 500}
+
+MW -> DB : SELECT by (account_number, \"abc-123\")
+DB --> MW : no record found
+
+MW -> DB : INSERT\nstatus = \"in_progress\"\nrequest_fingerprint = SHA-256(...)\nexpires_at = now + 24h
+DB --> MW : OK
+
+MW -> CB : POST /accounts/{id}/deposit\n{amountDeposit: 500}
+CB --> MW : 200 OK\n{transactionId, balanceAfter, referenceId, createdAt}
+
+note right of MW
+  Middleware builds the full response:
+  hash, blockchain submit, etc.
+end note
+
+MW -> DB : UPDATE set status = \"completed\"\nresponse_body = {full JSON response}\ncompleted_at = now
+DB --> MW : OK
+
+MW --> ATM : 200 OK\n{status: \"SUCCESS\", amount: 500,\nnewBalance: ..., canonicalHash: ..., ...}
+
+== Retry — same key, same body (network glitch) ==
+
+ATM -> MW : POST /atm/deposit\nIdempotency-Key: abc-123\n{amount: 500}
+
+MW -> DB : SELECT by (account_number, \"abc-123\")
+DB --> MW : record found\nstatus = \"completed\"\nfingerprint matches
+
+MW --> ATM : 200 OK\n{cached response — identical to first}\n**Core Banking is NOT called**
+
+note right of MW #FFEEEE
+  No duplicate deposit.
+  The customer is not
+  charged twice.
+end note
+
+@enduml

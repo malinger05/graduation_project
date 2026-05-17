@@ -1,0 +1,45 @@
+@startuml session_touch_logic
+title sessions.touch() — Decision Logic (/atm/session/continue)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam ActivityBackgroundColor #FAFAFA
+skinparam ActivityBorderColor #444444
+skinparam DiamondBackgroundColor #FFFDE8
+skinparam DiamondBorderColor #444444
+
+start
+
+:Receive X-Session-Token from\nPOST /atm/session/continue;
+
+if (token empty?) then (yes)
+  #FFCCCC:return **False**;
+  stop
+endif
+
+:Look up session_state by session_token;
+
+if (row found?) then (yes)
+
+  if (now - last_active > SESSION_TTL?\ndefault 1800s / 30 min) then (yes — expired)
+    #FFCCCC:return **False**\n(row left in DB until get() or cleanup);
+    stop
+  else (no — still valid)
+    :UPDATE last_active = now;
+    #CCFFCC:return **True**;
+    stop
+  endif
+
+else (no)
+  #FFCCCC:return **False**;
+  stop
+endif
+
+note right
+  Middleware maps False → **HTTP 401**
+  True → **{status: "ok"}**
+  Does **not** return jwt or balance.
+end note
+
+@enduml

@@ -20,29 +20,29 @@ middleware.py.
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
+import config
 from admin_client import AdminClient
 from canonical import hash_transaction
 
 
-# ── Tunables ──────────────────────────────────────────────────────────────────
+# ── Tunables (keychain / .env via config.py) ──────────────────────────────────
 
-RETRY_INTERVAL_SECONDS   = float(os.environ.get("WORKER_RETRY_INTERVAL_SECONDS",   "30"))
-CONFIRM_INTERVAL_SECONDS = float(os.environ.get("WORKER_CONFIRM_INTERVAL_SECONDS", "60"))
-TAMPER_INTERVAL_SECONDS  = float(os.environ.get("WORKER_TAMPER_INTERVAL_SECONDS",  "300"))
+RETRY_INTERVAL_SECONDS   = config.WORKER_RETRY_INTERVAL_SECONDS
+CONFIRM_INTERVAL_SECONDS = config.WORKER_CONFIRM_INTERVAL_SECONDS
+TAMPER_INTERVAL_SECONDS  = config.WORKER_TAMPER_INTERVAL_SECONDS
 
-RETRY_BATCH_SIZE   = int(os.environ.get("WORKER_RETRY_BATCH_SIZE",   "25"))
-CONFIRM_BATCH_SIZE = int(os.environ.get("WORKER_CONFIRM_BATCH_SIZE", "25"))
-TAMPER_BATCH_SIZE  = int(os.environ.get("WORKER_TAMPER_BATCH_SIZE",  "100"))
+RETRY_BATCH_SIZE   = config.WORKER_RETRY_BATCH_SIZE
+CONFIRM_BATCH_SIZE = config.WORKER_CONFIRM_BATCH_SIZE
+TAMPER_BATCH_SIZE  = config.WORKER_TAMPER_BATCH_SIZE
 
-TAMPER_LOOKBACK_HOURS = int(os.environ.get("WORKER_TAMPER_LOOKBACK_HOURS", "24"))
+TAMPER_LOOKBACK_HOURS = config.WORKER_TAMPER_LOOKBACK_HOURS
 
-MAX_SUBMIT_ATTEMPTS = int(os.environ.get("WORKER_MAX_SUBMIT_ATTEMPTS", "8"))
+MAX_SUBMIT_ATTEMPTS = config.WORKER_MAX_SUBMIT_ATTEMPTS
 
 
 # ── Per-row helpers ───────────────────────────────────────────────────────────

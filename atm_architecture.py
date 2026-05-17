@@ -40,7 +40,18 @@ class MiddlewareClient:
     def _headers(self) -> dict:
         if not self._session_token:
             raise RuntimeError("Not logged in.")
-        return {"x-session-token": self._session_token}
+        return {
+            "x-session-token": self._session_token,
+            "X-Channel":       "ATM_WEB",
+        }
+
+    def _mutation_headers(self, idempotency_key: str) -> dict:
+        """Session token + Idempotency-Key (required for deposit/withdraw per spec)."""
+        if not idempotency_key or not idempotency_key.strip():
+            raise ValueError("idempotency_key is required for financial operations")
+        headers = self._headers()
+        headers["Idempotency-Key"] = idempotency_key.strip()
+        return headers
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
@@ -54,6 +65,7 @@ class MiddlewareClient:
             resp = requests.post(
                 f"{self.base_url}/atm/login",
                 json={"accountNumber": account_number, "pin": pin},
+                headers={"X-Channel": "ATM_WEB"},
                 timeout=10,
             )
         except requests.exceptions.ConnectionError:
@@ -115,7 +127,7 @@ class MiddlewareClient:
 
     # ── Deposit ───────────────────────────────────────────────────────────────
 
-    def deposit(self, amount: float) -> tuple[bool, str, dict | None]:
+    def deposit(self, amount: float, *, idempotency_key: str) -> tuple[bool, str, dict | None]:
         """
         POST /atm/deposit → middleware → Spring Boot /accounts/{id}/deposit.
         Spring Boot acquires a pessimistic lock, updates the balance, persists
@@ -125,7 +137,7 @@ class MiddlewareClient:
             resp = requests.post(
                 f"{self.base_url}/atm/deposit",
                 json={"amount": amount},
-                headers=self._headers(),
+                headers=self._mutation_headers(idempotency_key),
                 timeout=30,
             )
         except requests.exceptions.ConnectionError:
@@ -145,7 +157,7 @@ class MiddlewareClient:
 
     # ── Withdraw ──────────────────────────────────────────────────────────────
 
-    def withdraw(self, amount: float) -> tuple[bool, str, dict | None]:
+    def withdraw(self, amount: float, *, idempotency_key: str) -> tuple[bool, str, dict | None]:
         """
         POST /atm/withdraw → middleware → Spring Boot /accounts/{id}/withdraw.
         Middleware starts a 30s ACK timer; if ATM doesn't confirm cash dispensed,
@@ -155,7 +167,7 @@ class MiddlewareClient:
             resp = requests.post(
                 f"{self.base_url}/atm/withdraw",
                 json={"amount": amount},
-                headers=self._headers(),
+                headers=self._mutation_headers(idempotency_key),
                 timeout=30,
             )
         except requests.exceptions.ConnectionError:
@@ -296,17 +308,21 @@ class ATMApp:
     def check_balance(self) -> float:
         return self.accounts_repo.get_balance(self.current_account)
 
-    def deposit(self, amount: float) -> tuple[bool, str, bool]:
+    def deposit(self, amount: float, *, idempotency_key: str) -> tuple[bool, str, bool]:
         if amount <= 0:
             return False, "Amount must be positive", False
-        ok, msg, result = self.accounts_repo.client.deposit(amount)
+        ok, msg, result = self.accounts_repo.client.deposit(
+            amount, idempotency_key=idempotency_key
+        )
         on_chain = bool(result and result.get("blockchainTx")) if ok else False
         return ok, msg, on_chain
 
-    def withdraw(self, amount: float) -> tuple[bool, str, bool]:
+    def withdraw(self, amount: float, *, idempotency_key: str) -> tuple[bool, str, bool]:
         if amount <= 0:
             return False, "Amount must be positive", False
-        ok, msg, result = self.accounts_repo.client.withdraw(amount)
+        ok, msg, result = self.accounts_repo.client.withdraw(
+            amount, idempotency_key=idempotency_key
+        )
         on_chain = bool(result and result.get("blockchainTx")) if ok else False
         return ok, msg, on_chain
 

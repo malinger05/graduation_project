@@ -1,0 +1,62 @@
+@startuml database_boundaries
+title Database Boundaries — Banking Data vs Operational State
+
+' ── Styling ──────────────────────────────────────────────────────────────────
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam ArrowColor #333333
+
+skinparam package {
+  BackgroundColor #FAFAFA
+  BorderColor #444444
+  FontStyle bold
+}
+skinparam database {
+  BackgroundColor #EFEFEF
+  BorderColor #444444
+}
+skinparam note {
+  BackgroundColor #FFFFE8
+  BorderColor #888888
+}
+
+' ── Core Banking side ────────────────────────────────────────────────────────
+package "Core Banking\n(owns banking data)" as PKG_CB {
+  database "**core_banking_db**" as CBDB {
+    [accounts]
+    [transactions]
+    [customers]
+    [users]
+  }
+}
+
+note bottom of CBDB
+  Sole source of truth for:
+    • account balances
+    • canonical transaction ledger
+    • customer identity & PIN hashes
+end note
+
+' ── Middleware side ──────────────────────────────────────────────────────────
+package "Middleware\n(owns operational state)" as PKG_MW {
+  database "**middleware_db**" as MWDB {
+    [idempotency_records]
+    [session_state]
+    [correlation_logs]
+    [routing_config]
+    [transaction_logs]
+  }
+}
+
+note bottom of MWDB
+  Holds **only** state the middleware
+  itself produces and consumes.
+  Never duplicates banking data —
+  no balances, no ledger rows.
+end note
+
+' ── The rule ─────────────────────────────────────────────────────────────────
+PKG_CB -[#AA0000,thickness=2]right-> PKG_MW : <b><color:#AA0000>no shared tables</color></b>\n<i>data flows only via HTTP API</i>
+
+@enduml

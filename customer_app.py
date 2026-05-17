@@ -5,12 +5,13 @@ No PostgreSQL. No blockchain. No Spring Boot calls.
 
 [FIX] Per-session ATMApp instances now carry an expiry timestamp.
       A background cleanup thread evicts sessions idle for longer than
-      ATM_SESSION_TTL_SECONDS (default: 30 minutes).
+      ATM_SESSION_TTL_SECONDS (default: 15 minutes).
       Logout removes the session immediately.
 """
 import os
 import io
 import base64
+import secrets
 import threading
 import time
 from functools import wraps
@@ -18,6 +19,7 @@ from functools import wraps
 from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 import qrcode
+import requests as _req
 from secrets_manager import get_secret
 
 load_dotenv()
@@ -31,6 +33,14 @@ from atm_architecture import (
 
 app = Flask(__name__)
 app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
+
+
+@app.context_processor
+def inject_idle_session_config():
+    return {
+        "atm_idle_prompt_ms": ATM_IDLE_PROMPT_SECONDS * 1000,
+        "atm_prompt_timeout_ms": ATM_PROMPT_TIMEOUT_SECONDS * 1000,
+    }
 
 # ── Per-session ATM instances ─────────────────────────────────────────────────
 #
@@ -48,8 +58,20 @@ app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-
 #     also sends a logout signal to the middleware so its session is cleaned up.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# How long (seconds) an ATM session may be idle before eviction (default 30 min)
-ATM_SESSION_TTL_SECONDS = int(os.environ.get("ATM_SESSION_TTL_SECONDS", "1800"))
+# Hard server-side cap if the browser never responds (default 15 min)
+ATM_SESSION_TTL_SECONDS = int(
+    get_secret("ATM_SESSION_TTL_SECONDS", "900", allow_env_fallback=False)
+)
+
+# After this many seconds idle, show "another transaction?" (default 2 min)
+ATM_IDLE_PROMPT_SECONDS = int(
+    get_secret("ATM_IDLE_PROMPT_SECONDS", "120", allow_env_fallback=False)
+)
+
+# Seconds to answer the prompt before auto sign-out (default 60)
+ATM_PROMPT_TIMEOUT_SECONDS = int(
+    get_secret("ATM_PROMPT_TIMEOUT_SECONDS", "60", allow_env_fallback=False)
+)
 
 # Maps atm_key → {"atm": ATMApp, "last_active": float}
 _atm_sessions: dict[str, dict] = {}
@@ -66,7 +88,6 @@ def _evict_atm_session(atm_key: str) -> None:
             atm: ATMApp = entry["atm"]
             client = atm.accounts_repo.client
             if client._session_token:
-                import requests as _req
                 _req.post(
                     f"{client.base_url}/atm/logout",
                     headers={"x-session-token": client._session_token},
@@ -116,6 +137,11 @@ def _register_atm_session(atm_key: str, atm: ATMApp) -> None:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _new_idempotency_key() -> str:
+    """One unique key per deposit/withdraw attempt (stable across retries of the same submit)."""
+    return secrets.token_hex(16)
+
 
 def format_remaining_lock_time(total_seconds):
     seconds = max(0, int(total_seconds or 0))
@@ -245,12 +271,40 @@ def logout():
     return redirect(url_for("login"))
 
 
+@app.route("/session/continue", methods=["POST"])
+@login_required
+def session_continue():
+    """User chose to continue after idle prompt — refresh Flask + middleware sessions."""
+    atm = _get_session_atm()
+    if not atm:
+        return {"ok": False}, 401
+    token = atm.accounts_repo.client._session_token
+    if token:
+        try:
+            resp = _req.post(
+                f"{MIDDLEWARE_URL}/atm/session/continue",
+                headers={"x-session-token": token},
+                timeout=5,
+            )
+            if resp.status_code == 401:
+                session.clear()
+                return {"ok": False}, 401
+        except Exception:
+            pass
+    return {"ok": True}
+
+
 
 
 
 @app.route("/withdraw", methods=["POST"])
 @login_required
 def withdraw():
+    idempotency_key = (request.form.get("idempotency_key") or "").strip()
+    if not idempotency_key:
+        flash("Missing transaction id. Please open the withdraw page and try again.")
+        return redirect(url_for("withdraw_page"))
+
     try:
         amount = float(request.form.get("amount") or 0)
     except ValueError:
@@ -262,7 +316,9 @@ def withdraw():
         return redirect(url_for("login"))
 
     try:
-        ok, msg, result = atm.accounts_repo.client.withdraw(amount)
+        ok, msg, result = atm.accounts_repo.client.withdraw(
+            amount, idempotency_key=idempotency_key
+        )
         if ok and isinstance(result, dict):
             _attach_qr({
                 "type":          "WITHDRAW",
@@ -279,6 +335,11 @@ def withdraw():
 @app.route("/deposit", methods=["POST"])
 @login_required
 def deposit():
+    idempotency_key = (request.form.get("idempotency_key") or "").strip()
+    if not idempotency_key:
+        flash("Missing transaction id. Please open the deposit page and try again.")
+        return redirect(url_for("deposit_page"))
+
     try:
         amount = float(request.form.get("amount") or 0)
     except ValueError:
@@ -290,7 +351,9 @@ def deposit():
         return redirect(url_for("login"))
 
     try:
-        ok, msg, result = atm.accounts_repo.client.deposit(amount)
+        ok, msg, result = atm.accounts_repo.client.deposit(
+            amount, idempotency_key=idempotency_key
+        )
         if ok and isinstance(result, dict):
             _attach_qr({
                 "type":          "DEPOSIT",
@@ -302,8 +365,6 @@ def deposit():
 
     flash(msg)
     return redirect(url_for("dashboard"))
-
-import requests as _req
 
 @app.route("/tx-status/<int:transaction_id>")
 @login_required
@@ -388,6 +449,7 @@ def withdraw_page():
         "withdraw.html",
         full_name=session.get("full_name", "Customer"),
         balance=balance,
+        idempotency_key=_new_idempotency_key(),
     )
 
 
@@ -406,6 +468,7 @@ def deposit_page():
         "deposit.html",
         full_name=session.get("full_name", "Customer"),
         balance=balance,
+        idempotency_key=_new_idempotency_key(),
     )
 
 

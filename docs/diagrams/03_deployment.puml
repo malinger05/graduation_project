@@ -1,0 +1,63 @@
+@startuml deployment
+title Deployment View — Containers, Ports, and External Services
+
+' ── Styling ──────────────────────────────────────────────────────────────────
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+skinparam ArrowColor #333333
+
+skinparam node {
+  BackgroundColor #FAFAFA
+  BorderColor #444444
+  FontStyle bold
+}
+skinparam artifact {
+  BackgroundColor #FFFFFF
+  BorderColor #777777
+}
+skinparam database {
+  BackgroundColor #EFEFEF
+  BorderColor #444444
+}
+skinparam cloud {
+  BackgroundColor #F4F4F4
+  BorderColor #444444
+}
+
+' ── Client ───────────────────────────────────────────────────────────────────
+node "Customer Device" as DEV {
+  artifact "ATM Client UI" as ATM
+}
+
+' ── Host running the system ──────────────────────────────────────────────────
+node "Application Host" as HOST {
+
+  artifact "**FastAPI**\nmiddleware.py\nhost:8000" as MW
+
+  artifact "**Spring Boot**\ncore-banking\nhost:8080" as CB
+
+  node "Docker network: <b>db</b>" as DOCKER {
+
+    database "**postgres-spring-boot**\nPostgres 16\nhost:5332 → 5432\n  db: core_banking_db" as PG_CB
+
+    database "**postgres-middleware**\nPostgres 16\nhost:5433 → 5432\n  db: middleware_db" as PG_MW
+  }
+}
+
+' ── External ─────────────────────────────────────────────────────────────────
+cloud "Public Internet" as NET {
+  artifact "**Ethereum Sepolia RPC**\nethereum-sepolia.publicnode.com\n(+ fallback URLs)" as ETH
+}
+
+' ── Edges ────────────────────────────────────────────────────────────────────
+ATM --> MW  : HTTPS (8000)
+MW  --> CB  : HTTP  (localhost:8080)
+CB  --> PG_CB : JDBC (5332)
+MW  --> PG_MW : SQLAlchemy (5433)
+MW  --> ETH   : HTTPS RPC\n(web3.py)
+
+' Layout hints
+PG_CB -[hidden]right- PG_MW
+
+@enduml
