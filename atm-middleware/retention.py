@@ -7,6 +7,7 @@ before delete; here we apply an in-database retention policy only.
 
 Tables affected:
   - transaction_logs      — rows with created_at older than retention window
+  - correlation_logs      — same retention window as transaction_logs
   - idempotency_records   — rows with expires_at in the past (TTL already set at insert)
 """
 
@@ -17,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete
 
 import db
-from models import IdempotencyRecord, TransactionLog
+from models import CorrelationLog, IdempotencyRecord, TransactionLog
 
 
 def purge_transaction_logs(retention_days: int) -> int:
@@ -32,6 +33,19 @@ def purge_transaction_logs(retention_days: int) -> int:
     with db.db_session() as s:
         result = s.execute(
             delete(TransactionLog).where(TransactionLog.created_at < cutoff)
+        )
+        return result.rowcount or 0
+
+
+def purge_correlation_logs(retention_days: int) -> int:
+    """Remove correlation trace rows older than retention_days."""
+    if retention_days <= 0 or not db.is_enabled():
+        return 0
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    with db.db_session() as s:
+        result = s.execute(
+            delete(CorrelationLog).where(CorrelationLog.created_at < cutoff)
         )
         return result.rowcount or 0
 
@@ -52,8 +66,10 @@ def purge_expired_idempotency() -> int:
 def run_retention(transaction_log_retention_days: int) -> dict[str, int]:
     """Run all retention tasks. Returns {table_name: rows_deleted}."""
     txn_logs = purge_transaction_logs(transaction_log_retention_days)
+    corr     = purge_correlation_logs(transaction_log_retention_days)
     idem     = purge_expired_idempotency()
     return {
         "transaction_logs":    txn_logs,
+        "correlation_logs":      corr,
         "idempotency_records": idem,
     }

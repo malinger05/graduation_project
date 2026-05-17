@@ -320,6 +320,22 @@ html,body{
 .error-icon{font-size:40px;margin-bottom:14px;}
 .error-title{font-size:18px;font-weight:700;color:var(--white);margin-bottom:6px;}
 .error-msg-text{font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:20px;line-height:1.6;}
+
+/* Idle session prompt (inactivity) */
+.idle-prompt-overlay{
+  position:fixed;inset:0;z-index:10000;
+  background:rgba(6,10,18,0.92);
+  display:flex;align-items:center;justify-content:center;padding:24px;
+}
+.idle-prompt-overlay.hidden{display:none;}
+.idle-prompt-card{
+  background:var(--navy2);border:1px solid rgba(245,184,0,0.25);
+  border-radius:20px;padding:32px 28px;max-width:420px;width:100%;text-align:center;
+}
+.idle-prompt-title{font-size:22px;font-weight:800;color:var(--white);margin-bottom:12px;}
+.idle-prompt-sub{font-size:14px;color:rgba(255,255,255,0.45);margin-bottom:24px;line-height:1.55;}
+.idle-prompt-sub span{color:var(--yellow);font-weight:700;font-family:var(--mono);}
+.idle-prompt-actions{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 </style>
 </head>
 <body>
@@ -606,6 +622,17 @@ html,body{
 </div><!-- screen -->
 </div><!-- atm-shell -->
 
+<div id="idle-prompt-overlay" class="idle-prompt-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="idle-prompt-title">
+  <div class="idle-prompt-card">
+    <h2 id="idle-prompt-title" class="idle-prompt-title">Would you like another transaction?</h2>
+    <p class="idle-prompt-sub">You have been idle. Choose within <span id="idle-prompt-countdown">60</span> seconds or you will be signed out.</p>
+    <div class="idle-prompt-actions">
+      <button type="button" class="btn btn-yellow" id="idle-prompt-yes">Yes, continue</button>
+      <button type="button" class="btn btn-red" id="idle-prompt-no">No, sign out</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── State ──
 const S = {
@@ -727,7 +754,15 @@ function enterMenu(){
 }
 
 // ── logout clears nav ──
+function hideIdlePrompt(){
+  idlePromptOpen=false;
+  idlePromptDeadline=null;
+  var el=document.getElementById('idle-prompt-overlay');
+  if(el)el.classList.add('hidden');
+}
+
 function doLogout(){
+  hideIdlePrompt();
   fetch('/logout',{method:'POST'}).finally(()=>{
     S.account='';S.name='Customer';S.balance=0;S.flow='';
     document.getElementById('header-nav').classList.remove('visible');
@@ -904,21 +939,54 @@ document.getElementById('qr-mini-link').href='{{ last_qr.verify_url }}';
 enterMenu();
 {% endif %}
 
-// ── Idle timeout ──
-var idleTimer;
-var IDLE_MS = {{ atm_idle_prompt_ms }};
-function resetIdle(){
-  clearTimeout(idleTimer);
-  idleTimer=setTimeout(()=>{
-    if(!S.account)return;
-    if(!confirm('Still there? Click OK to continue or Cancel to sign out.')){
-      doLogout();
-    } else {
-      fetch('/session/continue',{method:'POST'}).then(r=>{if(!r.ok)doLogout();else resetIdle();});
-    }
-  },IDLE_MS);
+// ── Idle timeout: prompt after IDLE_MS, auto logout after PROMPT_TIMEOUT_MS ──
+var idleTimer=null;
+var idlePromptTick=null;
+var idlePromptOpen=false;
+var idlePromptDeadline=null;
+var IDLE_MS={{ atm_idle_prompt_ms }};
+var PROMPT_TIMEOUT_MS={{ atm_prompt_timeout_ms }};
+
+function updateIdlePromptCountdown(){
+  if(!idlePromptOpen||!idlePromptDeadline)return;
+  var left=Math.max(0,Math.ceil((idlePromptDeadline-Date.now())/1000));
+  var el=document.getElementById('idle-prompt-countdown');
+  if(el)el.textContent=String(left);
+  if(left<=0)doLogout();
 }
-['click','keydown','mousemove','touchstart'].forEach(e=>document.addEventListener(e,resetIdle,{passive:true}));
+
+function showIdlePrompt(){
+  if(idlePromptOpen||!S.account)return;
+  idlePromptOpen=true;
+  clearTimeout(idleTimer);
+  idlePromptDeadline=Date.now()+PROMPT_TIMEOUT_MS;
+  document.getElementById('idle-prompt-overlay').classList.remove('hidden');
+  updateIdlePromptCountdown();
+}
+
+function resetIdle(){
+  if(idlePromptOpen)return;
+  clearTimeout(idleTimer);
+  if(!S.account)return;
+  idleTimer=setTimeout(showIdlePrompt,IDLE_MS);
+}
+
+document.getElementById('idle-prompt-yes').addEventListener('click',function(){
+  fetch('/session/continue',{method:'POST',credentials:'same-origin'})
+    .then(function(r){if(!r.ok)throw new Error('continue failed');hideIdlePrompt();resetIdle();})
+    .catch(function(){doLogout();});
+});
+document.getElementById('idle-prompt-no').addEventListener('click',doLogout);
+
+if(!idlePromptTick){
+  idlePromptTick=setInterval(function(){
+    if(idlePromptOpen)updateIdlePromptCountdown();
+  },1000);
+}
+
+['click','keydown','touchstart'].forEach(function(ev){
+  document.addEventListener(ev,resetIdle,{passive:true});
+});
 resetIdle();
 </script>
 </body>

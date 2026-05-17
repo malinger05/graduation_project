@@ -14,7 +14,8 @@ Responsibilities:
   - Run blockchain reconciliation worker threads (submit-retry, confirm-poll,
     tamper-check) — all going through Spring Boot's /admin/transactions/*
   - Persist middleware-side operational state (idempotency, sessions,
-    transaction audit log, etc.) in its own Postgres, separate from Core Banking's.
+    transaction audit log, correlation traces, etc.) in its own Postgres, separate
+    from Core Banking's.
 
 Intentionally NOT here:
   - No banking data. Core Banking owns accounts, balances, transactions.
@@ -22,8 +23,8 @@ Intentionally NOT here:
   - No transaction records. Core Banking stores transactions.
 
 The middleware's own database holds ONLY operational state that the middleware
-itself owns end-to-end (idempotency, sessions, transaction_logs; correlation logs /
-routing config still planned). It never duplicates banking data.
+itself owns end-to-end (idempotency, sessions, transaction_logs, correlation_logs;
+routing_config still planned). It never duplicates banking data.
 """
 
 import inspect
@@ -57,6 +58,7 @@ load_dotenv()
 import config  # noqa: E402  — keychain first; .env is optional fallback
 import blockchain_worker
 import db
+import correlation
 import idempotency
 import sessions
 import retention
@@ -199,6 +201,7 @@ def _audit(
     request_body: dict | None = None,
     response_body: Any = None,
     error_message: str | None = None,
+    correlation_id: str | None = None,
 ) -> None:
     transaction_logs.log_event(
         endpoint=endpoint,
@@ -212,6 +215,7 @@ def _audit(
         response_body=response_body,
         duration_ms=int((time.perf_counter() - started) * 1000),
         error_message=error_message,
+        correlation_id=correlation_id,
     )
 
 
@@ -444,41 +448,77 @@ def atm_login(
     started = time.perf_counter()
     channel = _resolve_channel(x_channel)
     req_audit = {"accountNumber": req.accountNumber, "pin": "***REDACTED***"}
+    corr = correlation.new_correlation_id()
+    correlation.log_step(
+        corr, "request_received", "middleware", "ok",
+        account_number=req.accountNumber, endpoint="/atm/login",
+    )
 
     lockout = _check_lockout(req.accountNumber)
     if lockout:
         body = {"status": "locked", **lockout}
+        correlation.log_step(
+            corr, "lockout_check", "middleware", "skipped",
+            account_number=req.accountNumber, endpoint="/atm/login",
+            message="account locked",
+        )
         _audit(
             endpoint="/atm/login", http_method="POST", outcome="success",
             status_code=200, started=started, account_number=req.accountNumber,
             channel=channel, request_body=req_audit, response_body=body,
+            correlation_id=corr,
         )
         return body
 
+    correlation.log_step(
+        corr, "core_banking_request", "core_banking", "ok",
+        account_number=req.accountNumber, endpoint="/atm/login",
+    )
     resp = _cb_post("/atm/login", {"accountNumber": req.accountNumber, "pin": req.pin})
 
     if resp.status_code == 401:
         result = _record_failed_attempt(req.accountNumber)
+        correlation.log_step(
+            corr, "core_banking_response", "core_banking", "error",
+            account_number=req.accountNumber, endpoint="/atm/login",
+            message="invalid credentials",
+        )
         _audit(
             endpoint="/atm/login", http_method="POST", outcome="success",
             status_code=200, started=started, account_number=req.accountNumber,
             channel=channel, request_body=req_audit, response_body=result,
+            correlation_id=corr,
         )
         return result
 
     if resp.status_code == 403:
         body = {"status": "locked", "remaining_lock_seconds": 0, "lock_minutes": 0}
+        correlation.log_step(
+            corr, "core_banking_response", "core_banking", "error",
+            account_number=req.accountNumber, endpoint="/atm/login",
+            message="account locked by core banking",
+        )
         _audit(
             endpoint="/atm/login", http_method="POST", outcome="success",
             status_code=200, started=started, account_number=req.accountNumber,
             channel=channel, request_body=req_audit, response_body=body,
+            correlation_id=corr,
         )
         return body
 
     if not resp.ok:
+        correlation.log_step(
+            corr, "core_banking_response", "core_banking", "error",
+            account_number=req.accountNumber, endpoint="/atm/login",
+            message=resp.text, detail={"status_code": resp.status_code},
+        )
         raise HTTPException(502, f"Core Banking error: {resp.text}")
 
     data = resp.json()
+    correlation.log_step(
+        corr, "core_banking_response", "core_banking", "ok",
+        account_number=req.accountNumber, endpoint="/atm/login",
+    )
     _reset_lockout(req.accountNumber)
 
     session_token = sessions.create(
@@ -502,10 +542,15 @@ def atm_login(
         },
     }
     safe_body = {**body, "sessionToken": "***REDACTED***"}
+    correlation.log_step(
+        corr, "session_create", "middleware", "ok",
+        account_number=req.accountNumber, endpoint="/atm/login",
+    )
     _audit(
         endpoint="/atm/login", http_method="POST", outcome="success",
         status_code=200, started=started, account_number=req.accountNumber,
         channel=channel, request_body=req_audit, response_body=safe_body,
+        correlation_id=corr,
     )
     return body
 
@@ -556,13 +601,22 @@ def _hash_and_persist(transaction_id: int,
                       amount: float,
                       balance_after: float,
                       reference_id: str,
-                      created_at: str) -> tuple[str, str | None]:
+                      created_at: str,
+                      *,
+                      correlation_id: str | None = None) -> tuple[str, str | None]:
     """
     Compute the canonical hash, submit to chain, and PATCH the row in Core
     Banking so the worker has durable bookkeeping. On any failure the row
     stays at chainStatus=PENDING_SUBMIT and the worker will retry it later.
     Returns (canonical_hash, blockchain_tx_or_None).
     """
+    if correlation_id:
+        correlation.log_step(
+            correlation_id, "blockchain_hash_compute", "middleware", "ok",
+            account_number=account_number,
+            detail={"transaction_id": transaction_id, "transaction_type": transaction_type},
+        )
+
     c_hash = hash_transaction(
         account_number=account_number,
         transaction_type=transaction_type,
@@ -573,9 +627,23 @@ def _hash_and_persist(transaction_id: int,
     )
     try:
         bc_tx = _submit_to_blockchain(c_hash)
+        if correlation_id:
+            correlation.log_step(
+                correlation_id, "blockchain_submit", "sepolia",
+                "ok" if bc_tx else "error",
+                account_number=account_number,
+                detail={"transaction_id": transaction_id, "canonical_hash": c_hash},
+                message=None if bc_tx else "submit returned no tx hash",
+            )
     except Exception as e:
         bc_tx = None
         print(f"[Middleware] inline submit failed for tx {transaction_id}: {e}")
+        if correlation_id:
+            correlation.log_step(
+                correlation_id, "blockchain_submit", "sepolia", "error",
+                account_number=account_number, message=str(e),
+                detail={"transaction_id": transaction_id},
+            )
 
     admin = _get_admin_client()
     if admin:
@@ -586,8 +654,26 @@ def _hash_and_persist(transaction_id: int,
                 blockchain_tx=bc_tx,
                 submit_error=None if bc_tx else "inline submit failed",
             )
+            if correlation_id:
+                correlation.log_step(
+                    correlation_id, "core_banking_blockchain_patch", "core_banking", "ok",
+                    account_number=account_number,
+                    detail={"transaction_id": transaction_id},
+                )
         except Exception as e:
             print(f"[Middleware] PATCH /admin/transactions/{transaction_id}/blockchain failed: {e}")
+            if correlation_id:
+                correlation.log_step(
+                    correlation_id, "core_banking_blockchain_patch", "core_banking", "error",
+                    account_number=account_number, message=str(e),
+                    detail={"transaction_id": transaction_id},
+                )
+    elif correlation_id:
+        correlation.log_step(
+            correlation_id, "core_banking_blockchain_patch", "core_banking", "skipped",
+            account_number=account_number,
+            message="admin client not configured",
+        )
     return c_hash, bc_tx
 
 
@@ -605,22 +691,48 @@ def atm_deposit(
     account_number = session["account_number"]
     old_balance   = session["balance"]
     jwt           = session["jwt"]
+    corr = correlation.new_correlation_id()
+    correlation.log_step(
+        corr, "request_received", "middleware", "ok",
+        account_number=account_number, endpoint="/atm/deposit",
+        detail=req.model_dump(),
+    )
 
     cached = idempotency.begin(
         idempotency_key, account_number, "/atm/deposit", req.model_dump()
     )
     if cached is not None:
+        correlation.log_step(
+            corr, "idempotency_cache_hit", "middleware", "cached",
+            account_number=account_number, endpoint="/atm/deposit",
+        )
         _audit(
             endpoint="/atm/deposit", http_method="POST", outcome="cached",
             status_code=200, started=started, account_number=account_number,
             channel=channel, idempotency_key=idempotency_key,
             request_body=req.model_dump(), response_body=cached,
+            correlation_id=corr,
         )
         return cached
 
+    correlation.log_step(
+        corr, "idempotency_claimed", "middleware", "ok",
+        account_number=account_number, endpoint="/atm/deposit",
+    )
+
     # 1. Forward to Core Banking — it validates, updates balance, saves transaction
+    correlation.log_step(
+        corr, "core_banking_request", "core_banking", "ok",
+        account_number=account_number, endpoint="/atm/deposit",
+        detail={"amount": req.amount},
+    )
     resp = _cb_post(f"/accounts/{account_id}/deposit", {"amountDeposit": req.amount}, jwt)
     if not resp.ok:
+        correlation.log_step(
+            corr, "core_banking_response", "core_banking", "error",
+            account_number=account_number, endpoint="/atm/deposit",
+            message=resp.text, detail={"status_code": resp.status_code},
+        )
         raise HTTPException(resp.status_code, resp.text)
 
     # 2. Read authoritative result — Core Banking did all the math
@@ -630,6 +742,11 @@ def atm_deposit(
     ref_id      = str(result.get("referenceId", ""))
     created_at  = str(result.get("createdAt", datetime.now(timezone.utc).isoformat()))
     sessions.update_balance(x_session_token, new_balance)
+    correlation.log_step(
+        corr, "core_banking_response", "core_banking", "ok",
+        account_number=account_number, endpoint="/atm/deposit",
+        detail={"transaction_id": tx_id, "balance_after": new_balance},
+    )
 
     # 3. Hash confirmed data, log to chain, persist hash+tx into Core Banking
     c_hash, bc_tx = _hash_and_persist(
@@ -640,6 +757,7 @@ def atm_deposit(
         balance_after=new_balance,
         reference_id=ref_id,
         created_at=created_at,
+        correlation_id=corr,
     )
 
     response = {
@@ -658,12 +776,17 @@ def atm_deposit(
     # 4. Cache the response so a retry of the same Idempotency-Key returns
     #    the exact same payload without re-charging the account.
     idempotency.finish(idempotency_key, account_number, response)
+    correlation.log_step(
+        corr, "idempotency_finish", "middleware", "ok",
+        account_number=account_number, endpoint="/atm/deposit",
+    )
 
     _audit(
         endpoint="/atm/deposit", http_method="POST", outcome="success",
         status_code=200, started=started, account_number=account_number,
         channel=channel, idempotency_key=idempotency_key,
         request_body=req.model_dump(), response_body=response,
+        correlation_id=corr,
     )
     return response
 
@@ -682,24 +805,55 @@ def atm_withdraw(
     account_number = session["account_number"]
     old_balance    = session["balance"]
     jwt            = session["jwt"]
+    corr = correlation.new_correlation_id()
+    correlation.log_step(
+        corr, "request_received", "middleware", "ok",
+        account_number=account_number, endpoint="/atm/withdraw",
+        detail=req.model_dump(),
+    )
 
     cached = idempotency.begin(
         idempotency_key, account_number, "/atm/withdraw", req.model_dump()
     )
     if cached is not None:
+        correlation.log_step(
+            corr, "idempotency_cache_hit", "middleware", "cached",
+            account_number=account_number, endpoint="/atm/withdraw",
+        )
         _audit(
             endpoint="/atm/withdraw", http_method="POST", outcome="cached",
             status_code=200, started=started, account_number=account_number,
             channel=channel, idempotency_key=idempotency_key,
             request_body=req.model_dump(), response_body=cached,
+            correlation_id=corr,
         )
         return cached
 
+    correlation.log_step(
+        corr, "idempotency_claimed", "middleware", "ok",
+        account_number=account_number, endpoint="/atm/withdraw",
+    )
+
     # 1. Forward to Core Banking — it validates funds, subtracts balance, saves transaction
+    correlation.log_step(
+        corr, "core_banking_request", "core_banking", "ok",
+        account_number=account_number, endpoint="/atm/withdraw",
+        detail={"amount": req.amount},
+    )
     resp = _cb_post(f"/accounts/{account_id}/withdraw", {"amountWithdraw": req.amount}, jwt)
     if resp.status_code == 400:
+        correlation.log_step(
+            corr, "core_banking_response", "core_banking", "error",
+            account_number=account_number, endpoint="/atm/withdraw",
+            message="insufficient funds",
+        )
         raise HTTPException(400, "Insufficient funds")
     if not resp.ok:
+        correlation.log_step(
+            corr, "core_banking_response", "core_banking", "error",
+            account_number=account_number, endpoint="/atm/withdraw",
+            message=resp.text, detail={"status_code": resp.status_code},
+        )
         raise HTTPException(resp.status_code, resp.text)
 
     # 2. Read authoritative result — Core Banking did all the math
@@ -709,6 +863,11 @@ def atm_withdraw(
     ref_id      = str(result.get("referenceId", ""))
     created_at  = str(result.get("createdAt", datetime.now(timezone.utc).isoformat()))
     sessions.update_balance(x_session_token, new_balance)
+    correlation.log_step(
+        corr, "core_banking_response", "core_banking", "ok",
+        account_number=account_number, endpoint="/atm/withdraw",
+        detail={"transaction_id": tx_id, "balance_after": new_balance},
+    )
 
     # 3. Hash confirmed data, log to chain, persist hash+tx into Core Banking
     c_hash, bc_tx = _hash_and_persist(
@@ -719,6 +878,7 @@ def atm_withdraw(
         balance_after=new_balance,
         reference_id=ref_id,
         created_at=created_at,
+        correlation_id=corr,
     )
 
     # 4. Register ACK timer — if ATM doesn't confirm cash dispensed within
@@ -748,12 +908,17 @@ def atm_withdraw(
     # 5. Cache the response — retries with the same Idempotency-Key get the
     #    same middlewareTxId / transactionId without a second debit.
     idempotency.finish(idempotency_key, account_number, response)
+    correlation.log_step(
+        corr, "idempotency_finish", "middleware", "ok",
+        account_number=account_number, endpoint="/atm/withdraw",
+    )
 
     _audit(
         endpoint="/atm/withdraw", http_method="POST", outcome="success",
         status_code=200, started=started, account_number=account_number,
         channel=channel, idempotency_key=idempotency_key,
         request_body=req.model_dump(), response_body=response,
+        correlation_id=corr,
     )
     return response
 
