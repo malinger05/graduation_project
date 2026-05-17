@@ -294,7 +294,8 @@ html,body{
 .txn-footer{padding:9px 12px;border-top:1px solid #EAE7E0;display:flex;gap:8px;flex-shrink:0;}
 
 /* ── LOCKED ── */
-#page-locked{background:var(--navy);justify-content:center;align-items:center;}
+#page-locked{background:var(--navy);justify-content:center;align-items:center;cursor:not-allowed;}
+#page-locked *{pointer-events:none;}
 .locked-inner{text-align:center;padding:40px;max-width:500px;margin:0 auto;}
 .locked-icon{
   width:90px;height:90px;border-radius:50%;
@@ -738,17 +739,14 @@ function doLogout(){
 // ── Locked countdown ──
 var lockTimer=null;
 function showLocked(totalSeconds){
-  // Navigate to locked page — goTo hides nav automatically
+  // Show the locked page
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-locked').classList.add('active');
   document.getElementById('header-nav').classList.remove('visible');
-  // Disable all interaction except the locked page itself
-  document.getElementById('screen-body-wrap').style.pointerEvents='none';
-  document.getElementById('page-locked').style.pointerEvents='all';
 
   var remaining=totalSeconds;
   var total=totalSeconds;
-  var circumference=427; // 2*pi*68
+  var circumference=427;
 
   function render(){
     var m=Math.floor(remaining/60);
@@ -764,11 +762,11 @@ function showLocked(totalSeconds){
     render();
     if(remaining<=0){
       clearInterval(lockTimer);
-      // Re-enable interaction and go back to idle
-      document.getElementById('screen-body-wrap').style.pointerEvents='';
+      lockTimer=null;
+      // Reset everything and go back to idle — no reload needed
+      S.account='';S.name='Customer';S.balance=0;S.flow='';
       resetLogin();
-      document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-      document.getElementById('page-idle').classList.add('active');
+      goTo('idle');
     }
   },1000);
 }
