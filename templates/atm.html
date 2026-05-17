@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Core Banking ATM</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --yellow:#F5B800;
+  --yellow-dark:#D9A100;
+  --navy:#0D1B2A;
+  --navy2:#142033;
+  --navy3:#1C2E45;
+  --red:#E8193C;
+  --green:#2ECC87;
+  --white:#FFFFFF;
+  --offwhite:#F8F7F2;
+  --text-dark:#0D1B2A;
+  --text-muted:#6B7A8D;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI','Helvetica Neue',Arial,sans-serif;
+  --mono:'SF Mono','Fira Code','Consolas','Menlo',monospace;
+  --radius:16px;
+  --radius-sm:10px;
+}
+html,body{
+  height:100%;width:100%;
+  margin:0;padding:0;
+  overflow:hidden;
+  background:var(--yellow);
+  font-family:var(--sans);
+}
+
+/* ATM Shell — fills entire viewport */
+.atm-shell{
+  width:100%;
+  height:100vh;
+  background:var(--navy);
+  padding:0;
+  position:relative;
+  box-sizing:border-box;
+}
+.atm-shell::before{display:none;}
+
+/* Screen */
+.screen{
+  width:100%;
+  height:100%;
+  background:var(--white);
+  border-radius:0;
+  overflow:hidden;display:flex;flex-direction:column;position:relative;
+}
+
+/* Header */
+.screen-header{
+  background:var(--navy);padding:13px 22px;
+  display:flex;align-items:center;justify-content:space-between;flex-shrink:0;
+}
+.brand{display:flex;align-items:center;gap:9px;}
+.brand-dot{width:10px;height:10px;border-radius:50%;background:var(--yellow);}
+.brand-name{font-size:17px;font-weight:800;color:var(--white);}
+.header-info{display:flex;gap:18px;align-items:center;}
+.hinfo{font-size:13px;color:rgba(255,255,255,0.45);font-family:var(--mono);}
+.hinfo span{color:rgba(255,255,255,0.8);}
+/* Nav only visible on menu — hidden during flows */
+.header-nav{display:none;gap:2px;}
+.header-nav.visible{display:flex;}
+.hn-link{padding:6px 14px;border-radius:7px;font-size:13px;font-weight:700;color:rgba(255,255,255,0.4);text-decoration:none;cursor:pointer;border:none;background:none;font-family:var(--sans);transition:all 0.15s;}
+.hn-link:hover,.hn-link.active{color:var(--yellow);background:rgba(245,184,0,0.1);}
+
+/* Screen body */
+.screen-body{flex:1;overflow:hidden;position:relative;}
+
+/* Pages */
+.page{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  opacity:0;pointer-events:none;
+  transition:opacity 0.22s ease,transform 0.22s ease;
+  transform:translateX(16px);
+}
+.page.active{opacity:1;pointer-events:all;transform:translateX(0);}
+
+/* Status bar */
+.status-bar{
+  height:28px;background:var(--navy2);
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 20px;flex-shrink:0;
+}
+.status-bar-text{font-size:9px;color:rgba(255,255,255,0.28);font-family:var(--mono);}
+.status-dot{width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block;animation:blink 2s infinite;margin-right:4px;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.35}}
+
+/* Shared buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:var(--radius-sm);padding:14px 24px;font-size:16px;font-weight:800;font-family:var(--sans);cursor:pointer;border:none;transition:all 0.18s;text-decoration:none;}
+.btn-yellow{background:var(--yellow);color:var(--navy);}
+.btn-yellow:hover{background:var(--yellow-dark);}
+.btn-navy{background:var(--navy);color:var(--white);}
+.btn-navy:hover{background:var(--navy2);}
+.btn-ghost{background:transparent;border:1.5px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.5);}
+.btn-ghost:hover{border-color:rgba(255,255,255,0.3);color:rgba(255,255,255,0.8);}
+.btn-red{background:rgba(232,25,60,0.08);border:1px solid rgba(232,25,60,0.2);color:var(--red);}
+.btn-red:hover{background:rgba(232,25,60,0.15);}
+.btn-sm{padding:10px 18px;font-size:14px;}
+.btn-full{width:100%;}
+
+/* ── IDLE ── */
+#page-idle{background:var(--navy);justify-content:center;align-items:center;}
+.idle-bg::before{content:'';position:absolute;width:500px;height:500px;background:var(--yellow);opacity:0.05;border-radius:50%;top:-160px;right:-160px;}
+.idle-bg::after{content:'';position:absolute;width:300px;height:300px;background:var(--yellow);opacity:0.03;border-radius:50%;bottom:-100px;left:-80px;}
+.idle-content{position:relative;z-index:1;text-align:center;padding:28px;}
+.idle-icon{width:68px;height:68px;border:2px solid rgba(245,184,0,0.25);border-radius:18px;display:flex;align-items:center;justify-content:center;margin:0 auto 18px;background:rgba(245,184,0,0.07);}
+.idle-icon svg{width:32px;height:32px;stroke:var(--yellow);stroke-width:1.8;fill:none;stroke-linecap:round;}
+.idle-title{font-size:36px;font-weight:800;color:var(--white);margin-bottom:7px;letter-spacing:-0.02em;}
+.idle-sub{font-size:16px;color:rgba(255,255,255,0.4);margin-bottom:32px;line-height:1.6;}
+.idle-actions{display:grid;grid-template-columns:1fr 1fr;gap:12px;width:460px;margin:0 auto;}
+.action-btn{
+  background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);
+  border-radius:16px;padding:22px 18px;cursor:pointer;transition:all 0.2s;
+  display:flex;align-items:center;gap:14px;color:var(--white);text-align:left;font-family:var(--sans);
+}
+.action-btn:hover,.action-btn:active{background:var(--yellow);border-color:var(--yellow);}
+.action-btn:hover .ab-label,.action-btn:active .ab-label{color:var(--navy);}
+.action-btn:hover .ab-icon,.action-btn:active .ab-icon{background:rgba(0,0,0,0.1);}
+.action-btn:hover .ab-icon svg,.action-btn:active .ab-icon svg{stroke:var(--navy);}
+.action-btn.primary{background:var(--yellow);border-color:var(--yellow);}
+.action-btn.primary:hover{background:var(--yellow-dark);}
+.action-btn.primary .ab-label{color:var(--navy);}
+.action-btn.primary .ab-icon{background:rgba(0,0,0,0.1);}
+.action-btn.primary .ab-icon svg{stroke:var(--navy);}
+.ab-icon{width:44px;height:44px;border-radius:12px;background:rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.ab-icon svg{width:22px;height:22px;stroke:var(--white);stroke-width:2;fill:none;stroke-linecap:round;}
+.ab-label{font-size:17px;font-weight:800;}
+.ab-sub{font-size:13px;opacity:0.5;margin-top:2px;}
+
+/* ── LOGIN ── */
+#page-login{background:var(--offwhite);}
+.login-split{display:flex;height:100%;}
+.login-left{
+  width:195px;flex-shrink:0;background:var(--navy);
+  display:flex;flex-direction:column;justify-content:space-between;padding:22px 18px;
+}
+.login-left-title{font-size:16px;font-weight:800;color:var(--white);margin-bottom:4px;}
+.login-left-sub{font-size:13px;color:rgba(255,255,255,0.35);line-height:1.5;}
+.login-steps{display:flex;flex-direction:column;gap:10px;}
+.lstep{display:flex;align-items:center;gap:10px;}
+.lstep-dot{width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.1);font-size:12px;font-weight:700;color:rgba(255,255,255,0.25);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:var(--mono);}
+.lstep.done .lstep-dot{background:var(--green);border-color:var(--green);color:var(--navy);}
+.lstep.active .lstep-dot{background:var(--yellow);border-color:var(--yellow);color:var(--navy);}
+.lstep-label{font-size:13px;color:rgba(255,255,255,0.3);}
+.lstep.active .lstep-label{color:rgba(255,255,255,0.85);font-weight:700;}
+.lstep.done .lstep-label{color:rgba(255,255,255,0.45);}
+.login-right{flex:1;display:flex;flex-direction:column;justify-content:center;padding:30px 36px;}
+.login-heading{font-size:26px;font-weight:800;color:var(--navy);margin-bottom:4px;letter-spacing:-0.02em;}
+.login-sub-text{font-size:15px;color:var(--text-muted);margin-bottom:24px;}
+.error-box{background:#FEF0F2;border:1px solid rgba(232,25,60,0.25);color:#C0273D;border-radius:8px;padding:11px 14px;font-size:14px;margin-bottom:14px;display:none;}
+.error-box.show{display:block;}
+.field{display:flex;flex-direction:column;gap:7px;margin-bottom:16px;}
+.field label{font-size:11px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);}
+.field input{background:var(--white);border:1.5px solid #E0DDD5;border-radius:var(--radius-sm);padding:14px 16px;font-size:18px;font-family:var(--sans);color:var(--navy);outline:none;transition:border-color 0.2s;}
+.field input:focus{border-color:var(--yellow);}
+.field input::placeholder{color:#C5C0B8;}
+
+/* ── MENU ── */
+#page-menu{background:var(--offwhite);display:flex;flex-direction:column;}
+.menu-topbar{background:var(--navy2);padding:14px 20px;display:flex;align-items:center;justify-content:space-between;}
+.welcome-text{font-size:14px;color:rgba(255,255,255,0.5);}
+.welcome-name{font-size:22px;font-weight:800;color:var(--white);margin-top:1px;letter-spacing:-0.02em;}
+.balance-pill{background:rgba(245,184,0,0.1);border:1px solid rgba(245,184,0,0.22);border-radius:24px;padding:10px 20px;display:flex;flex-direction:column;align-items:flex-end;}
+.balance-label-sm{font-size:10px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:rgba(245,184,0,0.6);}
+.balance-val{font-size:22px;font-weight:800;color:var(--yellow);font-family:var(--mono);}
+.menu-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:18px;flex:1;}
+.menu-card{
+  background:var(--white);border:1.5px solid #E8E4DC;border-radius:16px;
+  padding:0;cursor:pointer;transition:all 0.16s;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+}
+.menu-card:hover{border-color:var(--yellow);transform:translateY(-2px);box-shadow:0 6px 20px rgba(245,184,0,0.12);}
+.menu-card-icon{width:60px;height:60px;border-radius:16px;display:flex;align-items:center;justify-content:center;}
+.menu-card-icon svg{width:28px;height:28px;stroke-width:2;fill:none;stroke-linecap:round;}
+.mc-y{background:rgba(245,184,0,0.12);} .mc-y svg{stroke:var(--yellow-dark);}
+.mc-n{background:rgba(13,27,42,0.07);}  .mc-n svg{stroke:var(--navy);}
+.mc-g{background:rgba(46,204,135,0.1);} .mc-g svg{stroke:#1da868;}
+.mc-r{background:rgba(232,25,60,0.08);} .mc-r svg{stroke:var(--red);}
+.menu-card-label{font-size:20px;font-weight:800;color:var(--navy);}
+.menu-card-sub{font-size:14px;color:var(--text-muted);margin-top:4px;}
+.logout-bar{padding:9px 14px;display:flex;align-items:center;justify-content:space-between;border-top:1px solid #EAE7E0;}
+.qr-mini{display:flex;align-items:center;gap:8px;}
+.qr-mini img{width:32px;height:32px;border-radius:5px;border:1px solid #E8E4DC;}
+.qr-mini-text{font-size:9px;color:var(--text-muted);line-height:1.5;}
+.qr-mini-text a{color:#4A90E8;text-decoration:none;font-family:var(--mono);}
+
+/* ── AMOUNT ── */
+#page-amount{background:var(--offwhite);display:flex;flex-direction:column;}
+.amount-header{background:var(--navy);padding:16px 22px;display:flex;align-items:center;gap:13px;}
+.back-btn{width:30px;height:30px;border-radius:8px;background:rgba(255,255,255,0.08);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background 0.15s;}
+.back-btn:hover{background:rgba(255,255,255,0.14);}
+.back-btn svg{width:15px;height:15px;stroke:rgba(255,255,255,0.65);stroke-width:2.5;fill:none;stroke-linecap:round;}
+.amount-op{font-size:13px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.4);}
+.amount-title-text{font-size:20px;font-weight:800;color:var(--white);margin-top:2px;}
+.amount-body{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:18px 28px;}
+.amount-display{text-align:center;margin-bottom:22px;}
+.amount-currency{font-size:28px;color:var(--text-muted);font-weight:300;margin-right:4px;}
+.amount-number{font-size:64px;font-weight:800;color:var(--navy);font-family:var(--mono);letter-spacing:-0.03em;}
+.amount-number.has-error{color:var(--red);}
+.amount-hint{font-size:14px;color:var(--text-muted);margin-top:6px;font-weight:600;}
+.quick-amounts{display:flex;gap:9px;margin-bottom:22px;flex-wrap:wrap;justify-content:center;}
+.qa-btn{padding:10px 22px;border-radius:24px;background:var(--white);border:1.5px solid #E0DDD5;font-size:15px;font-weight:800;color:var(--navy);cursor:pointer;transition:all 0.15s;font-family:var(--sans);}
+.qa-btn:hover,.qa-btn.active{border-color:var(--yellow);background:rgba(245,184,0,0.07);}
+.numpad{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;width:280px;margin:0 auto;}
+.numkey{height:58px;border-radius:13px;background:var(--white);border:1.5px solid #E8E4DC;font-size:22px;font-weight:800;color:var(--navy);cursor:pointer;transition:all 0.11s;font-family:var(--sans);display:flex;align-items:center;justify-content:center;}
+.numkey:hover{background:var(--yellow);border-color:var(--yellow);}
+.numkey:active{transform:scale(0.94);}
+.numkey.del{font-size:16px;font-weight:700;}
+.numkey.confirm-key{background:var(--navy);border-color:var(--navy);color:var(--white);font-size:16px;}
+.numkey.confirm-key:hover{background:var(--navy2);}
+
+/* ── PROCESSING ── */
+#page-processing{background:var(--white);justify-content:center;align-items:center;}
+.processing-inner{text-align:center;padding:30px;}
+.spinner{width:64px;height:64px;border-radius:50%;border:3px solid #E8E4DC;border-top-color:var(--yellow);animation:spin 0.85s linear infinite;margin:0 auto 22px;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.proc-title{font-size:17px;font-weight:700;color:var(--navy);margin-bottom:5px;}
+.proc-sub{font-size:11px;color:var(--text-muted);}
+
+/* ── CASH ── */
+#page-cash{background:var(--navy);justify-content:center;align-items:center;}
+.cash-inner{text-align:center;padding:28px;}
+.cash-animation{margin:0 auto 24px;position:relative;width:160px;height:120px;}
+.cash-slot{width:160px;height:15px;background:var(--navy3);border-radius:4px;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);}
+.cash-note{width:140px;height:78px;background:linear-gradient(135deg,#7CB342,#689F38);border-radius:7px;position:absolute;left:10px;top:50%;transform:translateY(22px);opacity:0;animation:ejectNote 1.6s 0.3s ease forwards;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,0.18);}
+.cash-note-inner{width:118px;height:58px;border:1px solid rgba(255,255,255,0.14);border-radius:4px;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.75);font-size:14px;font-weight:700;letter-spacing:0.04em;font-family:var(--mono);}
+@keyframes ejectNote{0%{transform:translateY(22px);opacity:0;}30%{opacity:1;}65%{transform:translateY(-58px);opacity:1;}100%{transform:translateY(-58px);opacity:1;}}
+.cash-title{font-size:19px;font-weight:700;color:var(--white);margin-bottom:6px;}
+.cash-amount{font-size:34px;font-weight:700;color:var(--yellow);font-family:var(--mono);margin-bottom:5px;}
+.cash-sub{font-size:11px;color:rgba(255,255,255,0.4);}
+.cash-new-balance{margin-top:14px;padding:9px 18px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:10px;display:inline-flex;gap:9px;align-items:center;}
+.cnb-label{font-size:10px;color:rgba(255,255,255,0.38);}
+.cnb-val{font-size:13px;font-weight:700;color:var(--white);font-family:var(--mono);}
+
+/* ── SUCCESS ── */
+#page-success{background:var(--offwhite);justify-content:center;align-items:center;}
+.success-inner{text-align:center;padding:28px;max-width:310px;margin:0 auto;}
+.success-icon{width:68px;height:68px;border-radius:50%;background:rgba(46,204,135,0.12);border:2px solid rgba(46,204,135,0.28);display:flex;align-items:center;justify-content:center;margin:0 auto 18px;animation:popIn 0.4s ease;}
+@keyframes popIn{from{transform:scale(0.6);opacity:0}to{transform:scale(1);opacity:1}}
+.success-icon svg{width:30px;height:30px;stroke:var(--green);stroke-width:2.5;fill:none;stroke-linecap:round;}
+.success-title{font-size:20px;font-weight:700;color:var(--navy);margin-bottom:5px;}
+.success-amount{font-size:34px;font-weight:700;color:var(--green);font-family:var(--mono);margin-bottom:4px;}
+.success-sub{font-size:11px;color:var(--text-muted);margin-bottom:18px;}
+.receipt-box{background:var(--white);border:1px solid #E8E4DC;border-radius:11px;padding:14px;text-align:left;margin-bottom:18px;}
+.receipt-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;}
+.receipt-row+.receipt-row{border-top:1px solid #F0EDE8;}
+.rr-label{font-size:10px;color:var(--text-muted);}
+.rr-val{font-size:11px;font-weight:700;color:var(--navy);font-family:var(--mono);}
+.rr-val.green{color:var(--green);}
+
+/* ── BALANCE ── */
+#page-balance{background:var(--navy);display:flex;flex-direction:column;}
+.balance-full-header{padding:20px 22px;display:flex;align-items:center;justify-content:space-between;}
+.balance-big{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;}
+.bal-label{font-size:10px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:rgba(255,255,255,0.3);margin-bottom:10px;}
+.bal-amount{font-size:52px;font-weight:700;color:var(--white);font-family:var(--mono);letter-spacing:-0.03em;}
+.bal-amount .bal-cents{font-size:26px;opacity:0.5;}
+.bal-account{font-size:11px;color:rgba(255,255,255,0.3);margin-top:7px;font-family:var(--mono);}
+.bal-footer{padding:14px 18px;display:flex;gap:10px;}
+
+/* ── TRANSACTIONS ── */
+#page-transactions{background:var(--offwhite);display:flex;flex-direction:column;}
+.txn-header{background:var(--navy2);padding:13px 20px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+.txn-header-title{font-size:13px;font-weight:700;color:var(--white);}
+.txn-count{font-size:10px;color:rgba(255,255,255,0.35);font-family:var(--mono);}
+.txn-list{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:6px;}
+.txn-list::-webkit-scrollbar{width:3px;}
+.txn-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+.txn-row{background:var(--white);border-radius:11px;padding:11px 13px;display:flex;align-items:center;gap:11px;border:1.5px solid #E8E4DC;}
+.txn-row:hover{border-color:#C8C4BC;}
+.ti{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.ti svg{width:16px;height:16px;stroke-width:2;fill:none;stroke-linecap:round;}
+.ti-d{background:rgba(46,204,135,0.1);} .ti-d svg{stroke:#1da868;}
+.ti-w{background:rgba(245,184,0,0.1);} .ti-w svg{stroke:var(--yellow-dark);}
+.ti-o{background:rgba(13,27,42,0.07);} .ti-o svg{stroke:var(--navy);}
+.txn-info{flex:1;}
+.txn-type{font-size:12px;font-weight:700;color:var(--navy);}
+.txn-time{font-size:9px;color:var(--text-muted);font-family:var(--mono);}
+.txn-right{text-align:right;}
+.txn-amt{font-size:13px;font-weight:700;font-family:var(--mono);}
+.txn-amt.d{color:var(--green);}
+.txn-amt.w{color:var(--navy);}
+.chain-badge{display:inline-flex;align-items:center;font-size:8px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;padding:2px 6px;border-radius:4px;margin-top:2px;}
+.cb-c{background:rgba(46,204,135,0.1);color:#1da868;}
+.cb-s{background:rgba(74,144,232,0.1);color:#3a7bd5;}
+.cb-p{background:rgba(200,152,26,0.08);color:#8B6800;}
+.cb-f{background:rgba(232,25,60,0.07);color:var(--red);}
+.txn-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--text-muted);font-size:12px;}
+.txn-footer{padding:9px 12px;border-top:1px solid #EAE7E0;display:flex;gap:8px;flex-shrink:0;}
+
+/* ── LOCKED ── */
+#page-locked{background:var(--navy);justify-content:center;align-items:center;}
+.locked-inner{text-align:center;padding:40px;max-width:500px;margin:0 auto;}
+.locked-icon{
+  width:90px;height:90px;border-radius:50%;
+  background:rgba(232,25,60,0.12);border:2px solid rgba(232,25,60,0.3);
+  display:flex;align-items:center;justify-content:center;margin:0 auto 24px;
+}
+.locked-icon svg{width:42px;height:42px;stroke:var(--red);stroke-width:2;fill:none;stroke-linecap:round;}
+.locked-title{font-size:32px;font-weight:800;color:var(--white);margin-bottom:10px;letter-spacing:-0.02em;}
+.locked-sub{font-size:17px;color:rgba(255,255,255,0.45);margin-bottom:36px;line-height:1.6;}
+.countdown-ring{position:relative;width:160px;height:160px;margin:0 auto 28px;}
+.countdown-ring svg{transform:rotate(-90deg);}
+.countdown-ring circle.track{stroke:rgba(255,255,255,0.07);}
+.countdown-ring circle.fill{stroke:var(--red);stroke-linecap:round;transition:stroke-dashoffset 1s linear;}
+.countdown-time{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  font-size:36px;font-weight:800;color:var(--white);font-family:var(--mono);
+  letter-spacing:-0.02em;
+}
+.countdown-label{font-size:12px;color:rgba(255,255,255,0.3);margin-top:4px;letter-spacing:0.06em;text-transform:uppercase;}
+.locked-hint{font-size:14px;color:rgba(255,255,255,0.25);margin-top:16px;}
+.error-inner{text-align:center;padding:28px;max-width:320px;}
+.error-icon{font-size:40px;margin-bottom:14px;}
+.error-title{font-size:18px;font-weight:700;color:var(--white);margin-bottom:6px;}
+.error-msg-text{font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:20px;line-height:1.6;}
+</style>
+</head>
+<body>
+<div class="atm-shell">
+<div class="screen">
+
+<!-- Header -->
+<div class="screen-header">
+  <div class="brand">
+    <div class="brand-dot"></div>
+    <span class="brand-name">Core Banking ATM</span>
+  </div>
+  <div class="header-info">
+    <div class="header-nav" id="header-nav" style="display:none;">
+      <button class="hn-link" onclick="goTo('menu')">Home</button>
+      <button class="hn-link" onclick="showBalancePage()">Balance</button>
+      <button class="hn-link" onclick="showTransactions()">History</button>
+    </div>
+    <span class="hinfo">ATM <span>#CB-0042</span></span>
+    <span class="hinfo" id="clock"></span>
+  </div>
+</div>
+
+<!-- Body -->
+<div class="screen-body" id="screen-body-wrap">
+
+  <!-- IDLE -->
+  <div class="page active" id="page-idle">
+    <div class="idle-bg"></div>
+    <div class="idle-content">
+      <div class="idle-icon">
+        <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
+      </div>
+      <h1 class="idle-title">Welcome</h1>
+      <p class="idle-sub">Select a service to get started.<br>Your transaction is encrypted end-to-end.</p>
+      <div class="idle-actions">
+        <button class="action-btn" onclick="startFlow('withdraw')">
+          <div class="ab-icon"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div>
+          <div><div class="ab-label">Withdraw</div><div class="ab-sub">Cash out</div></div>
+        </button>
+        <button class="action-btn" onclick="startFlow('deposit')">
+          <div class="ab-icon"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg></div>
+          <div><div class="ab-label">Deposit</div><div class="ab-sub">Add funds</div></div>
+        </button>
+        <button class="action-btn" onclick="startFlow('balance')">
+          <div class="ab-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg></div>
+          <div><div class="ab-label">Balance</div><div class="ab-sub">Check account</div></div>
+        </button>
+        <button class="action-btn" onclick="startFlow('history')">
+          <div class="ab-icon"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/></svg></div>
+          <div><div class="ab-label">History</div><div class="ab-sub">Transactions</div></div>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- LOGIN -->
+  <div class="page" id="page-login">
+    <div class="login-split">
+      <div class="login-left">
+        <div>
+          <div class="login-left-title">Secure Login</div>
+          <div class="login-left-sub" style="margin-top:4px;">Enter your credentials to continue</div>
+        </div>
+        <div class="login-steps">
+          <div class="lstep active" id="step1"><div class="lstep-dot">1</div><div class="lstep-label">Account number</div></div>
+          <div class="lstep" id="step2"><div class="lstep-dot">2</div><div class="lstep-label">PIN</div></div>
+          <div class="lstep" id="step3"><div class="lstep-dot">3</div><div class="lstep-label">Verified</div></div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="goTo('idle')">Cancel</button>
+      </div>
+      <div class="login-right">
+        <div class="login-heading" id="login-heading">Enter account number</div>
+        <div class="login-sub-text" id="login-sub">Your 10-digit account number</div>
+        <div class="error-box" id="login-error"></div>
+        <div class="field">
+          <label id="login-field-label">Account Number</label>
+          <input type="text" id="login-input" placeholder="e.g. 1000000001" autocomplete="off">
+        </div>
+        <button class="btn btn-yellow btn-full" onclick="loginNext()">Continue →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MENU -->
+  <div class="page" id="page-menu">
+    <div class="menu-topbar">
+      <div>
+        <div class="welcome-text">Welcome back,</div>
+        <div class="welcome-name" id="menu-name">Customer</div>
+      </div>
+      <div class="balance-pill">
+        <div class="balance-label-sm">Balance</div>
+        <div class="balance-val" id="menu-balance">$0.00</div>
+      </div>
+    </div>
+    <div class="menu-grid">
+      <div class="menu-card" onclick="doOp('withdraw')">
+        <div class="menu-card-icon mc-y"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div>
+        <div style="text-align:center;"><div class="menu-card-label">Withdraw</div><div class="menu-card-sub">Get cash</div></div>
+      </div>
+      <div class="menu-card" onclick="doOp('deposit')">
+        <div class="menu-card-icon mc-n"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg></div>
+        <div style="text-align:center;"><div class="menu-card-label">Deposit</div><div class="menu-card-sub">Add funds</div></div>
+      </div>
+      <div class="menu-card" onclick="showBalancePage()">
+        <div class="menu-card-icon mc-g"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg></div>
+        <div style="text-align:center;"><div class="menu-card-label">Balance</div><div class="menu-card-sub">Account overview</div></div>
+      </div>
+      <div class="menu-card" onclick="showTransactions()">
+        <div class="menu-card-icon mc-r"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/></svg></div>
+        <div style="text-align:center;"><div class="menu-card-label">History</div><div class="menu-card-sub">Recent activity</div></div>
+      </div>
+    </div>
+    <div class="logout-bar">
+      <div class="qr-mini" id="qr-mini-wrap" style="display:none;">
+        <img id="qr-mini-img" src="" alt="QR">
+        <div class="qr-mini-text">Last tx · <a id="qr-mini-link" href="#" target="_blank">Etherscan ↗</a></div>
+      </div>
+      <div style="flex:1;"></div>
+      <button class="btn btn-red btn-sm" onclick="doLogout()">End session</button>
+    </div>
+  </div>
+
+  <!-- AMOUNT -->
+  <div class="page" id="page-amount">
+    <div class="amount-header">
+      <button class="back-btn" onclick="goTo('menu')">
+        <svg viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div>
+        <div class="amount-op" id="amount-op-label">WITHDRAW</div>
+        <div class="amount-title-text" id="amount-title">How much cash?</div>
+      </div>
+    </div>
+    <div class="amount-body">
+      <div class="amount-display">
+        <span class="amount-currency">$</span><span class="amount-number" id="amount-display">0</span>
+        <div class="amount-hint" id="amount-hint">Tap a quick amount or use the keypad</div>
+      </div>
+      <div class="quick-amounts">
+        <button class="qa-btn" onclick="setAmount(20,this)">$20</button>
+        <button class="qa-btn" onclick="setAmount(50,this)">$50</button>
+        <button class="qa-btn" onclick="setAmount(100,this)">$100</button>
+        <button class="qa-btn" onclick="setAmount(200,this)">$200</button>
+        <button class="qa-btn" onclick="setAmount(500,this)">$500</button>
+      </div>
+      <div class="numpad">
+        <button class="numkey" onclick="numInput('1')">1</button>
+        <button class="numkey" onclick="numInput('2')">2</button>
+        <button class="numkey" onclick="numInput('3')">3</button>
+        <button class="numkey" onclick="numInput('4')">4</button>
+        <button class="numkey" onclick="numInput('5')">5</button>
+        <button class="numkey" onclick="numInput('6')">6</button>
+        <button class="numkey" onclick="numInput('7')">7</button>
+        <button class="numkey" onclick="numInput('8')">8</button>
+        <button class="numkey" onclick="numInput('9')">9</button>
+        <button class="numkey del" onclick="numDel()">⌫</button>
+        <button class="numkey" onclick="numInput('0')">0</button>
+        <button class="numkey confirm-key" onclick="confirmAmount()">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PROCESSING -->
+  <div class="page" id="page-processing">
+    <div class="processing-inner">
+      <div class="spinner"></div>
+      <div class="proc-title" id="proc-title">Processing transaction</div>
+      <div class="proc-sub" id="proc-sub">Connecting to Core Banking · Please wait</div>
+    </div>
+  </div>
+
+  <!-- CASH -->
+  <div class="page" id="page-cash">
+    <div class="cash-inner">
+      <div class="cash-animation">
+        <div class="cash-slot">
+          <div class="cash-note" id="cash-note">
+            <div class="cash-note-inner" id="cash-note-text">$100</div>
+          </div>
+        </div>
+      </div>
+      <div class="cash-title">Please collect your cash</div>
+      <div class="cash-amount" id="cash-amount-display">$100.00</div>
+      <div class="cash-sub">Take your cash from the dispenser slot below</div>
+      <div class="cash-new-balance">
+        <span class="cnb-label">New balance</span>
+        <span class="cnb-val" id="cash-new-balance">$900.00</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- SUCCESS -->
+  <div class="page" id="page-success">
+    <div class="success-inner">
+      <div class="success-icon">
+        <svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>
+      </div>
+      <div class="success-title">Deposit successful</div>
+      <div class="success-amount" id="success-amount">$100.00</div>
+      <div class="success-sub">Funds added to your account</div>
+      <div class="receipt-box">
+        <div class="receipt-row"><span class="rr-label">Account</span><span class="rr-val" id="receipt-account">—</span></div>
+        <div class="receipt-row"><span class="rr-label">Deposited</span><span class="rr-val green" id="receipt-amount">$100.00</span></div>
+        <div class="receipt-row"><span class="rr-label">New balance</span><span class="rr-val" id="receipt-balance">—</span></div>
+        <div class="receipt-row"><span class="rr-label">Status</span><span class="rr-val green">Confirmed</span></div>
+      </div>
+      <button class="btn btn-navy btn-full" onclick="goTo('menu')">Back to menu</button>
+    </div>
+  </div>
+
+  <!-- BALANCE -->
+  <div class="page" id="page-balance">
+    <div class="balance-full-header">
+      <button class="back-btn" onclick="goTo('menu')">
+        <svg viewBox="0 0 24 24" stroke="rgba(255,255,255,0.65)" stroke-width="2.5" fill="none" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+    </div>
+    <div class="balance-big">
+      <div class="bal-label">Available Balance</div>
+      <div class="bal-amount"><span id="bal-main">$0</span><span class="bal-cents" id="bal-cents">.00</span></div>
+      <div class="bal-account" id="bal-account">Account •••• ----</div>
+    </div>
+    <div class="bal-footer">
+      <button class="btn btn-yellow" style="flex:1;" onclick="doOp('withdraw')">Withdraw</button>
+      <button class="btn btn-ghost" style="flex:1;" onclick="goTo('menu')">Menu</button>
+    </div>
+  </div>
+
+  <!-- TRANSACTIONS -->
+  <div class="page" id="page-transactions">
+    <div class="txn-header">
+      <div class="txn-header-title">Transaction History</div>
+      <div class="txn-count" id="txn-count">Loading…</div>
+    </div>
+    <div class="txn-list" id="txn-list"></div>
+    <div class="txn-footer">
+      <button class="btn btn-yellow btn-sm" onclick="doOp('withdraw')">Withdraw</button>
+      <button class="btn btn-navy btn-sm" onclick="doOp('deposit')">Deposit</button>
+      <button class="btn btn-red btn-sm" onclick="goTo('menu')">Back</button>
+    </div>
+  </div>
+
+  <!-- LOCKED -->
+  <div class="page" id="page-locked">
+    <div class="locked-inner">
+      <div class="locked-icon">
+        <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+      </div>
+      <div class="locked-title">Account Locked</div>
+      <div class="locked-sub">Too many incorrect PIN attempts.<br>Please wait before trying again.</div>
+      <div class="countdown-ring">
+        <svg width="160" height="160" viewBox="0 0 160 160">
+          <circle class="track" cx="80" cy="80" r="68" fill="none" stroke-width="8"/>
+          <circle class="fill" id="lock-ring" cx="80" cy="80" r="68" fill="none" stroke-width="8"
+            stroke-dasharray="427" stroke-dashoffset="0"/>
+        </svg>
+        <div class="countdown-time" id="lock-countdown">--:--</div>
+      </div>
+      <div class="locked-hint">This screen cannot be dismissed. Please wait for the timer.</div>
+    </div>
+  </div>
+
+  <!-- ERROR -->
+  <div class="page" id="page-error">
+    <div class="error-inner">
+      <div class="error-icon">⚠️</div>
+      <div class="error-title" id="error-title">Something went wrong</div>
+      <div class="error-msg-text" id="error-msg">Please try again.</div>
+      <button class="btn btn-yellow" onclick="goTo('menu')">Back to menu</button>
+    </div>
+  </div>
+
+</div><!-- screen-body -->
+
+<!-- Status bar -->
+<div class="status-bar">
+  <span class="status-bar-text"><span class="status-dot"></span>SECURE · TLS 1.3</span>
+  <span class="status-bar-text" id="status-account"></span>
+  <span class="status-bar-text">CORE BANKING v2.4</span>
+</div>
+
+</div><!-- screen -->
+</div><!-- atm-shell -->
+
+<script>
+// ── State ──
+const S = {
+  account: '',
+  name: 'Customer',
+  balance: 0,
+  flow: '',
+  amount: '',
+  loginStep: 1,
+  loginAccount: '',
+};
+
+// ── Clock ──
+function tick(){var n=new Date();var el=document.getElementById('clock');if(el)el.textContent=n.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});}
+tick();setInterval(tick,1000);
+
+// ── Page navigation ──
+function goTo(id){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  var t=document.getElementById('page-'+id);
+  if(t)t.classList.add('active');
+  // Nav only visible when on menu — locked during all other flows
+  var nav=document.getElementById('header-nav');
+  if(id==='menu'){nav.classList.add('visible');}
+  else{nav.classList.remove('visible');}
+}
+
+// ── Login flow ──
+function startFlow(type){
+  S.flow=type;
+  resetLogin();
+  goTo('login');
+}
+
+function resetLogin(){
+  S.loginStep=1;S.loginAccount='';
+  document.getElementById('login-heading').textContent='Enter account number';
+  document.getElementById('login-sub').textContent='Your 10-digit account number';
+  document.getElementById('login-field-label').textContent='Account Number';
+  document.getElementById('login-input').type='text';
+  document.getElementById('login-input').placeholder='e.g. 1000000001';
+  document.getElementById('login-input').value='';
+  document.getElementById('login-error').classList.remove('show');
+  document.getElementById('step1').className='lstep active';
+  document.getElementById('step2').className='lstep';
+  document.getElementById('step3').className='lstep';
+}
+
+function loginNext(){
+  var val=document.getElementById('login-input').value.trim();
+  var err=document.getElementById('login-error');
+  err.classList.remove('show');
+
+  if(S.loginStep===1){
+    if(!val){err.textContent='Enter your account number.';err.classList.add('show');return;}
+    S.loginAccount=val;
+    S.loginStep=2;
+    document.getElementById('login-heading').textContent='Enter your PIN';
+    document.getElementById('login-sub').textContent='Your 4–8 digit ATM PIN';
+    document.getElementById('login-field-label').textContent='PIN';
+    document.getElementById('login-input').type='password';
+    document.getElementById('login-input').placeholder='••••';
+    document.getElementById('login-input').value='';
+    document.getElementById('step1').className='lstep done';
+    document.getElementById('step2').className='lstep active';
+    return;
+  }
+
+  if(S.loginStep===2){
+    if(!val){err.textContent='Enter your PIN.';err.classList.add('show');return;}
+    document.getElementById('step2').className='lstep done';
+    document.getElementById('step3').className='lstep active';
+    // POST to Flask
+    fetch('/login',{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'account='+encodeURIComponent(S.loginAccount)+'&pin='+encodeURIComponent(val)
+    })
+    .then(r=>r.json().then(d=>({ok:r.ok,d})))
+    .then(({ok,d})=>{
+      if(d.status==='ok'){
+        S.account=d.account;S.name=d.full_name;S.balance=parseFloat(d.balance||0);
+        document.getElementById('step3').className='lstep done';
+        document.getElementById('status-account').textContent='ACC '+S.account;
+        setTimeout(()=>{
+          if(S.flow==='balance'){showBalancePage();}
+          else if(S.flow==='withdraw'||S.flow==='deposit'){enterMenu();setTimeout(()=>doOp(S.flow),300);}
+          else{enterMenu();}
+        },500);
+      } else if(d.status==='locked'){
+        var msg=d.message||'';
+        var match=msg.match(/(\d+):(\d+)/);
+        var secs=match?(parseInt(match[1])*60+parseInt(match[2])):300;
+        showLocked(secs);
+      } else {
+        document.getElementById('step2').className='lstep active';
+        document.getElementById('step3').className='lstep';
+        err.textContent=d.message||'Invalid credentials.';
+        err.classList.add('show');
+        document.getElementById('login-input').value='';
+        S.loginStep=2;
+      }
+    })
+    .catch(()=>{err.textContent='Cannot reach server. Try again.';err.classList.add('show');S.loginStep=2;document.getElementById('step2').className='lstep active';document.getElementById('step3').className='lstep';});
+  }
+}
+
+document.getElementById('login-input').addEventListener('keydown',e=>{if(e.key==='Enter')loginNext();});
+
+function enterMenu(){
+  document.getElementById('menu-name').textContent=S.name;
+  document.getElementById('menu-balance').textContent='$'+S.balance.toFixed(2);
+  {% if last_qr %}
+  document.getElementById('qr-mini-wrap').style.display='flex';
+  document.getElementById('qr-mini-img').src='{{ last_qr.qr_data_uri }}';
+  document.getElementById('qr-mini-link').href='{{ last_qr.verify_url }}';
+  {% endif %}
+  goTo('menu');
+}
+
+// ── logout clears nav ──
+function doLogout(){
+  fetch('/logout',{method:'POST'}).finally(()=>{
+    S.account='';S.name='Customer';S.balance=0;S.flow='';
+    document.getElementById('header-nav').classList.remove('visible');
+    document.getElementById('status-account').textContent='';
+    goTo('idle');
+  });
+}
+
+// ── Locked countdown ──
+var lockTimer=null;
+function showLocked(totalSeconds){
+  // Navigate to locked page — goTo hides nav automatically
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-locked').classList.add('active');
+  document.getElementById('header-nav').classList.remove('visible');
+  // Disable all interaction except the locked page itself
+  document.getElementById('screen-body-wrap').style.pointerEvents='none';
+  document.getElementById('page-locked').style.pointerEvents='all';
+
+  var remaining=totalSeconds;
+  var total=totalSeconds;
+  var circumference=427; // 2*pi*68
+
+  function render(){
+    var m=Math.floor(remaining/60);
+    var s=remaining%60;
+    document.getElementById('lock-countdown').textContent=(m<10?'0':'')+m+':'+(s<10?'0':'')+s;
+    var pct=remaining/total;
+    document.getElementById('lock-ring').style.strokeDashoffset=circumference*(1-pct);
+  }
+  render();
+  if(lockTimer)clearInterval(lockTimer);
+  lockTimer=setInterval(()=>{
+    remaining--;
+    render();
+    if(remaining<=0){
+      clearInterval(lockTimer);
+      // Re-enable interaction and go back to idle
+      document.getElementById('screen-body-wrap').style.pointerEvents='';
+      resetLogin();
+      document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+      document.getElementById('page-idle').classList.add('active');
+    }
+  },1000);
+}
+
+// ── Balance page ──
+function showBalancePage(){
+  var parts=S.balance.toFixed(2).split('.');
+  document.getElementById('bal-main').textContent='$'+parseInt(parts[0]).toLocaleString();
+  document.getElementById('bal-cents').textContent='.'+parts[1];
+  document.getElementById('bal-account').textContent='Account •••• '+S.account.slice(-4);
+  goTo('balance');
+}
+
+// ── Transactions ──
+function showTransactions(){
+  goTo('transactions');
+  document.getElementById('txn-count').textContent='Loading…';
+  document.getElementById('txn-list').innerHTML='<div style="text-align:center;padding:30px;color:#6B7A8D;font-size:12px;">Fetching transactions…</div>';
+  fetch('/transactions-api')
+  .then(r=>r.json())
+  .then(d=>{
+    if(d.status!=='ok'||!d.transactions.length){
+      document.getElementById('txn-count').textContent='0 transactions';
+      document.getElementById('txn-list').innerHTML='<div class="txn-empty">No transactions yet</div>';
+      return;
+    }
+    document.getElementById('txn-count').textContent=d.transactions.length+' transactions';
+    var html='';
+    d.transactions.forEach(t=>{
+      var isD=t.type==='DEPOSIT'||t.type==='TRANSFER_IN';
+      var icon=isD
+        ?'<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg>'
+        :'<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+      var badge=t.chain_status==='CONFIRMED'?'cb-c ⛓ confirmed':t.chain_status==='SUBMITTED'?'cb-s ⏳ submitted':t.chain_status==='FAILED_SUBMIT'?'cb-f ✗ failed':'cb-p ● pending';
+      var bClass=badge.split(' ')[0]; var bText=badge.substring(badge.indexOf(' ')+1);
+      html+='<div class="txn-row"><div class="ti '+(isD?'ti-d':'ti-w')+'">'+icon+'</div><div class="txn-info"><div class="txn-type">'+t.type.replace(/_/g,' ')+'</div><div class="txn-time">'+(t.timestamp||'').substring(0,19).replace('T',' ')+'</div></div><div class="txn-right"><div class="txn-amt '+(isD?'d':'w')+'">'+(isD?'+':'-')+'$'+parseFloat(t.amount).toFixed(2)+'</div><div><span class="chain-badge '+bClass+'">'+bText+'</span></div></div></div>';
+    });
+    document.getElementById('txn-list').innerHTML=html;
+  })
+  .catch(()=>{document.getElementById('txn-list').innerHTML='<div class="txn-empty">Could not load transactions.</div>';});
+}
+
+// ── Amount input ──
+function doOp(type){
+  S.flow=type;S.amount='';
+  document.getElementById('amount-display').textContent='0';
+  document.getElementById('amount-display').classList.remove('has-error');
+  document.getElementById('amount-hint').textContent='Tap a quick amount or use the keypad';
+  document.querySelectorAll('.qa-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('amount-op-label').textContent=type==='withdraw'?'WITHDRAW':'DEPOSIT';
+  document.getElementById('amount-title').textContent=type==='withdraw'?'How much cash?':'Amount to deposit?';
+  goTo('amount');
+}
+
+function setAmount(n,el){
+  S.amount=String(n);
+  document.getElementById('amount-display').textContent=n.toLocaleString();
+  document.getElementById('amount-display').classList.remove('has-error');
+  document.querySelectorAll('.qa-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+}
+function numInput(d){
+  if(S.amount.length>=6)return;
+  S.amount=S.amount==='0'?d:S.amount+d;
+  document.getElementById('amount-display').textContent=parseInt(S.amount||'0').toLocaleString();
+  document.getElementById('amount-display').classList.remove('has-error');
+  document.querySelectorAll('.qa-btn').forEach(b=>b.classList.remove('active'));
+}
+function numDel(){
+  S.amount=S.amount.slice(0,-1);
+  document.getElementById('amount-display').textContent=parseInt(S.amount||'0').toLocaleString();
+}
+
+function confirmAmount(){
+  var amt=parseInt(S.amount||'0');
+  if(amt<=0){document.getElementById('amount-display').classList.add('has-error');document.getElementById('amount-hint').textContent='Please enter a valid amount';return;}
+  if(S.flow==='withdraw'&&amt>S.balance){document.getElementById('amount-display').classList.add('has-error');document.getElementById('amount-hint').textContent='Insufficient funds (balance: $'+S.balance.toFixed(2)+')';return;}
+
+  goTo('processing');
+  document.getElementById('proc-title').textContent=S.flow==='withdraw'?'Processing withdrawal':'Processing deposit';
+  document.getElementById('proc-sub').textContent='Connecting to Core Banking · Please wait';
+
+  var idem=Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2);
+
+  fetch('/'+S.flow,{
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'amount='+amt+'&idempotency_key='+idem
+  })
+  .then(r=>r.json().then(d=>({ok:r.ok,d})))
+  .then(({ok,d})=>{
+    if(ok&&d.status==='ok'){
+      S.balance=parseFloat(d.newBalance||S.balance);
+      document.getElementById('menu-balance').textContent='$'+S.balance.toFixed(2);
+      if(S.flow==='withdraw'){
+        document.getElementById('cash-note-text').textContent='$'+amt;
+        document.getElementById('cash-amount-display').textContent='$'+amt.toFixed(2);
+        document.getElementById('cash-new-balance').textContent='$'+S.balance.toFixed(2);
+        var note=document.getElementById('cash-note');
+        note.style.animation='none';note.offsetHeight;note.style.animation='';
+        goTo('cash');
+        setTimeout(()=>goTo('menu'),4000);
+      } else {
+        document.getElementById('success-amount').textContent='+$'+amt.toFixed(2);
+        document.getElementById('receipt-account').textContent='•••• '+S.account.slice(-4);
+        document.getElementById('receipt-amount').textContent='+$'+amt.toFixed(2);
+        document.getElementById('receipt-balance').textContent='$'+S.balance.toFixed(2);
+        goTo('success');
+      }
+    } else {
+      document.getElementById('error-title').textContent=S.flow==='withdraw'?'Withdrawal failed':'Deposit failed';
+      document.getElementById('error-msg').textContent=d.message||'Please try again.';
+      goTo('error');
+    }
+  })
+  .catch(()=>{
+    document.getElementById('error-title').textContent='Connection error';
+    document.getElementById('error-msg').textContent='Cannot reach Core Banking. Make sure all services are running.';
+    goTo('error');
+  });
+}
+
+// ── Pre-populate from Flask session if already logged in ──
+{% if logged_in %}
+S.account = "{{ account }}";
+S.name = "{{ full_name }}";
+S.balance = {{ balance }};
+document.getElementById('status-account').textContent = 'ACC {{ account }}';
+document.getElementById('header-nav').classList.add('visible');
+{% if last_qr %}
+document.getElementById('qr-mini-wrap').style.display='flex';
+document.getElementById('qr-mini-img').src='{{ last_qr.qr_data_uri }}';
+document.getElementById('qr-mini-link').href='{{ last_qr.verify_url }}';
+{% endif %}
+enterMenu();
+{% endif %}
+
+// ── Idle timeout ──
+var idleTimer;
+var IDLE_MS = {{ atm_idle_prompt_ms }};
+function resetIdle(){
+  clearTimeout(idleTimer);
+  idleTimer=setTimeout(()=>{
+    if(!S.account)return;
+    if(!confirm('Still there? Click OK to continue or Cancel to sign out.')){
+      doLogout();
+    } else {
+      fetch('/session/continue',{method:'POST'}).then(r=>{if(!r.ok)doLogout();else resetIdle();});
+    }
+  },IDLE_MS);
+}
+['click','keydown','mousemove','touchstart'].forEach(e=>document.addEventListener(e,resetIdle,{passive:true}));
+resetIdle();
+</script>
+</body>
+</html>

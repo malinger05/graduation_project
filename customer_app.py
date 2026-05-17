@@ -2,11 +2,6 @@
 customer_app.py  —  Layer 1
 Flask web UI. Talks ONLY to middleware (Layer 2).
 No PostgreSQL. No blockchain. No Spring Boot calls.
-
-[FIX] Per-session ATMApp instances now carry an expiry timestamp.
-      A background cleanup thread evicts sessions idle for longer than
-      ATM_SESSION_TTL_SECONDS (default: 15 minutes).
-      Logout removes the session immediately.
 """
 import os
 import io
@@ -17,7 +12,7 @@ import time
 from functools import wraps
 
 from dotenv import load_dotenv
-from flask import Flask, flash, redirect, render_template, request, session, url_for
+from flask import Flask, flash, redirect, render_template, request, session, url_for, jsonify
 import qrcode
 import requests as _req
 from secrets_manager import get_secret
@@ -42,49 +37,26 @@ def inject_idle_session_config():
         "atm_prompt_timeout_ms": ATM_PROMPT_TIMEOUT_SECONDS * 1000,
     }
 
-# ── Per-session ATM instances ─────────────────────────────────────────────────
-#
-# CRITICAL FIX: The original _atm_sessions dict grew without bound — sessions
-# were only removed on explicit logout, so a browser that was closed without
-# logging out (or a network error mid-logout) left a dead entry forever.
-# Under sustained load this would exhaust server memory.
-#
-# Fix:
-#   - Each entry stores a last_active timestamp alongside the ATMApp instance.
-#   - _session_cleanup() runs in a daemon thread every 60s and evicts entries
-#     idle for longer than ATM_SESSION_TTL_SECONDS.
-#   - _touch_session() updates last_active on every authenticated request.
-#   - logout() and the eviction loop both call _evict_atm_session() which
-#     also sends a logout signal to the middleware so its session is cleaned up.
-# ─────────────────────────────────────────────────────────────────────────────
 
-# Hard server-side cap if the browser never responds (default 15 min)
 ATM_SESSION_TTL_SECONDS = int(
     get_secret("ATM_SESSION_TTL_SECONDS", "900", allow_env_fallback=False)
 )
-
-# After this many seconds idle, show "another transaction?" (default 2 min)
 ATM_IDLE_PROMPT_SECONDS = int(
     get_secret("ATM_IDLE_PROMPT_SECONDS", "120", allow_env_fallback=False)
 )
-
-# Seconds to answer the prompt before auto sign-out (default 60)
 ATM_PROMPT_TIMEOUT_SECONDS = int(
     get_secret("ATM_PROMPT_TIMEOUT_SECONDS", "60", allow_env_fallback=False)
 )
 
-# Maps atm_key → {"atm": ATMApp, "last_active": float}
 _atm_sessions: dict[str, dict] = {}
 _atm_sessions_lock = threading.Lock()
 
 
 def _evict_atm_session(atm_key: str) -> None:
-    """Remove one session entry and signal middleware to drop its session."""
     with _atm_sessions_lock:
         entry = _atm_sessions.pop(atm_key, None)
     if entry:
         try:
-            # Best-effort: tell middleware to invalidate its session token too
             atm: ATMApp = entry["atm"]
             client = atm.accounts_repo.client
             if client._session_token:
@@ -94,11 +66,10 @@ def _evict_atm_session(atm_key: str) -> None:
                     timeout=5,
                 )
         except Exception:
-            pass  # Middleware logout is best-effort; local eviction always completes
+            pass
 
 
 def _session_cleanup() -> None:
-    """Daemon thread: evict idle ATM sessions every 60 seconds."""
     while True:
         time.sleep(60)
         cutoff = time.time() - ATM_SESSION_TTL_SECONDS
@@ -113,13 +84,11 @@ def _session_cleanup() -> None:
             app.logger.info(f"[SessionCleanup] Evicted {len(stale_keys)} idle ATM session(s)")
 
 
-# Start the cleanup daemon at import time (before first request)
 _cleanup_thread = threading.Thread(target=_session_cleanup, daemon=True)
 _cleanup_thread.start()
 
 
 def _get_session_atm() -> ATMApp | None:
-    """Return the ATMApp for the current Flask session, updating last_active."""
     key = session.get("atm_key")
     if not key:
         return None
@@ -136,10 +105,7 @@ def _register_atm_session(atm_key: str, atm: ATMApp) -> None:
         _atm_sessions[atm_key] = {"atm": atm, "last_active": time.time()}
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
 def _new_idempotency_key() -> str:
-    """One unique key per deposit/withdraw attempt (stable across retries of the same submit)."""
     return secrets.token_hex(16)
 
 
@@ -169,13 +135,12 @@ def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
         if not session.get("account"):
-            return redirect(url_for("login"))
+            return redirect(url_for("atm_home"))
         return view(*args, **kwargs)
     return wrapped
 
 
 def _attach_qr(txn):
-    """Build QR payload from a transaction and store in Flask session."""
     if not txn:
         return
     tx_hash = txn.get("blockchain_tx") or txn.get("blockchainTx")
@@ -196,56 +161,84 @@ def _attach_qr(txn):
 
 @app.route("/")
 def index():
+    return redirect(url_for("atm_home"))
+
+
+@app.route("/atm")
+def atm_home():
+    """
+    Single-page ATM shell. If logged in, passes balance/name so JS
+    can skip straight to the menu. If not logged in, shows idle/login screen.
+    """
     if session.get("account"):
-        return redirect(url_for("dashboard"))
-    return redirect(url_for("login"))
+        atm = _get_session_atm()
+        if not atm:
+            session.clear()
+            return render_template("atm.html",
+                logged_in=False,
+                full_name="",
+                balance=0,
+                account="",
+                last_qr=None,
+            )
+        try:
+            balance = atm.check_balance()
+        except Exception:
+            balance = 0
+        return render_template("atm.html",
+            logged_in=True,
+            full_name=session.get("full_name", "Customer"),
+            balance=balance,
+            account=session.get("account", ""),
+            last_qr=session.get("last_qr"),
+        )
+    return render_template("atm.html",
+        logged_in=False,
+        full_name="",
+        balance=0,
+        account="",
+        last_qr=None,
+    )
 
 
-@app.route("/login", methods=["GET", "POST"])
+# Keep /dashboard pointing here for any redirects
+@app.route("/dashboard")
+def dashboard():
+    return redirect(url_for("atm_home"))
+
+
+@app.route("/login", methods=["POST"])
 def login():
-    if request.method == "GET":
-        return render_template("login.html", remaining_lock_seconds=0)
-
     account = (request.form.get("account") or "").strip()
     pin = (request.form.get("pin") or "").strip()
+
     if not account or not pin:
-        flash("Enter account number and PIN.")
-        return render_template("login.html", remaining_lock_seconds=0)
+        return jsonify({"status": "error", "message": "Enter account number and PIN."}), 400
 
     try:
         accounts_repo = AccountsRepository(MIDDLEWARE_URL)
         auth_result = accounts_repo.authenticate_with_status(account, pin)
     except RuntimeError as e:
-        return render_template("config_error.html", error=str(e)), 503
+        return jsonify({"status": "error", "message": str(e)}), 503
     except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
+        return jsonify({"status": "error", "message": str(e)}), 503
 
     auth_status = auth_result.get("status")
 
     if auth_status == "locked":
-        remaining_seconds = int(auth_result.get("remaining_lock_seconds", 0) or 0)
-        remaining = format_remaining_lock_time(remaining_seconds)
-        if auth_result.get("lock_minutes"):
-            flash(
-                f"Too many failed attempts. Account is locked for "
-                f"{auth_result['lock_minutes']} minutes. Try again in {remaining}."
-            )
-        else:
-            flash(f"Account is locked. Try again in {remaining}.")
-        return render_template("login.html", remaining_lock_seconds=remaining_seconds)
+        remaining = int(auth_result.get("remaining_lock_seconds", 300))
+        mins, secs = divmod(remaining, 60)
+        return jsonify({
+            "status": "locked",
+            "message": f"Account locked. Try again in {mins:02d}:{secs:02d}.",
+        }), 403
 
     if auth_status != "ok":
-        attempts_to_next_lock = auth_result.get("attempts_to_next_lock")
-        if attempts_to_next_lock:
-            flash(
-                f"Invalid account number or PIN. "
-                f"{attempts_to_next_lock} attempt(s) left before lockout."
-            )
-        else:
-            flash("Invalid account number or PIN.")
-        return render_template("login.html", remaining_lock_seconds=0)
+        attempts = auth_result.get("attempts_to_next_lock")
+        msg = f"Invalid credentials. {attempts} attempt(s) left before lockout." if attempts else "Invalid account number or PIN."
+        return jsonify({"status": "invalid", "message": msg}), 401
 
-    # Login successful — create per-session ATM instance
+    # Success — create session
     import secrets as _s
     atm_key = _s.token_hex(8)
     transactions_repo = TransactionsRepository(accounts_repo)
@@ -258,7 +251,13 @@ def login():
     session["full_name"] = user.get("name", "Customer")
     session["user_id"] = user.get("account_id", account)
     session["atm_key"] = atm_key
-    return redirect(url_for("dashboard"))
+
+    return jsonify({
+        "status": "ok",
+        "full_name": user.get("name", "Customer"),
+        "balance": float(user.get("balance", 0)),
+        "account": account,
+    })
 
 
 @app.route("/logout", methods=["POST"])
@@ -267,17 +266,15 @@ def logout():
     if key:
         _evict_atm_session(key)
     session.clear()
-    flash("You are signed out.")
-    return redirect(url_for("login"))
+    return jsonify({"status": "ok"})
 
 
 @app.route("/session/continue", methods=["POST"])
 @login_required
 def session_continue():
-    """User chose to continue after idle prompt — refresh Flask + middleware sessions."""
     atm = _get_session_atm()
     if not atm:
-        return {"ok": False}, 401
+        return jsonify({"ok": False}), 401
     token = atm.accounts_repo.client._session_token
     if token:
         try:
@@ -288,90 +285,128 @@ def session_continue():
             )
             if resp.status_code == 401:
                 session.clear()
-                return {"ok": False}, 401
+                return jsonify({"ok": False}), 401
         except Exception:
             pass
-    return {"ok": True}
-
-
-
+    return jsonify({"ok": True})
 
 
 @app.route("/withdraw", methods=["POST"])
 @login_required
 def withdraw():
-    idempotency_key = (request.form.get("idempotency_key") or "").strip()
+    data = request.get_json(silent=True) or request.form
+    idempotency_key = (data.get("idempotency_key") or "").strip()
     if not idempotency_key:
-        flash("Missing transaction id. Please open the withdraw page and try again.")
-        return redirect(url_for("withdraw_page"))
+        idempotency_key = _new_idempotency_key()
 
     try:
-        amount = float(request.form.get("amount") or 0)
-    except ValueError:
-        flash("Enter a valid amount.")
-        return redirect(url_for("dashboard"))
+        amount = float(data.get("amount") or 0)
+    except (ValueError, TypeError):
+        return jsonify({"status": "error", "message": "Invalid amount."}), 400
 
     atm = _get_session_atm()
     if not atm:
-        return redirect(url_for("login"))
+        return jsonify({"status": "error", "message": "Session expired."}), 401
 
     try:
         ok, msg, result = atm.accounts_repo.client.withdraw(
             amount, idempotency_key=idempotency_key
         )
-        if ok and isinstance(result, dict):
-            _attach_qr({
-                "type":          "WITHDRAW",
-                "amount":        amount,
-                "blockchain_tx": result.get("blockchainTx"),
-            })
     except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
+        return jsonify({"status": "error", "message": str(e)}), 503
 
-    flash(msg)
-    return redirect(url_for("dashboard"))
+    if ok and isinstance(result, dict):
+        _attach_qr({"type": "WITHDRAW", "amount": amount, "blockchain_tx": result.get("blockchainTx")})
+        return jsonify({
+            "status": "ok",
+            "message": msg,
+            "newBalance": result.get("newBalance", 0),
+            "blockchainTx": result.get("blockchainTx", ""),
+        })
+
+    return jsonify({"status": "error", "message": msg}), 400
 
 
 @app.route("/deposit", methods=["POST"])
 @login_required
 def deposit():
-    idempotency_key = (request.form.get("idempotency_key") or "").strip()
+    data = request.get_json(silent=True) or request.form
+    idempotency_key = (data.get("idempotency_key") or "").strip()
     if not idempotency_key:
-        flash("Missing transaction id. Please open the deposit page and try again.")
-        return redirect(url_for("deposit_page"))
+        idempotency_key = _new_idempotency_key()
 
     try:
-        amount = float(request.form.get("amount") or 0)
-    except ValueError:
-        flash("Enter a valid amount.")
-        return redirect(url_for("dashboard"))
+        amount = float(data.get("amount") or 0)
+    except (ValueError, TypeError):
+        return jsonify({"status": "error", "message": "Invalid amount."}), 400
 
     atm = _get_session_atm()
     if not atm:
-        return redirect(url_for("login"))
+        return jsonify({"status": "error", "message": "Session expired."}), 401
 
     try:
         ok, msg, result = atm.accounts_repo.client.deposit(
             amount, idempotency_key=idempotency_key
         )
-        if ok and isinstance(result, dict):
-            _attach_qr({
-                "type":          "DEPOSIT",
-                "amount":        amount,
-                "blockchain_tx": result.get("blockchainTx"),
-            })
     except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
+        return jsonify({"status": "error", "message": str(e)}), 503
 
-    flash(msg)
-    return redirect(url_for("dashboard"))
+    if ok and isinstance(result, dict):
+        _attach_qr({"type": "DEPOSIT", "amount": amount, "blockchain_tx": result.get("blockchainTx")})
+        return jsonify({
+            "status": "ok",
+            "message": msg,
+            "newBalance": result.get("newBalance", 0),
+            "blockchainTx": result.get("blockchainTx", ""),
+        })
+
+    return jsonify({"status": "error", "message": msg}), 400
+
+
+@app.route("/balance-api")
+@login_required
+def balance_api():
+    atm = _get_session_atm()
+    if not atm:
+        return jsonify({"status": "error"}), 401
+    try:
+        balance = atm.check_balance()
+        return jsonify({"status": "ok", "balance": balance})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 503
+
+
+@app.route("/transactions-api")
+@login_required
+def transactions_api():
+    atm = _get_session_atm()
+    if not atm:
+        return jsonify({"status": "error"}), 401
+    try:
+        raw = atm.transactions_repo.get_transactions_for_account(session["account"], 20)
+        recent = [
+            {
+                "type":          t.get("transactionType") or t.get("type", ""),
+                "amount":        float(t.get("amount", 0) or 0),
+                "timestamp":     str(t.get("createdAt") or t.get("created_at", "")),
+                "status":        t.get("transactionStatus") or t.get("status", "APPROVED"),
+                "transaction_id": t.get("transactionId"),
+                "chain_status":  t.get("chainStatus", "PENDING_SUBMIT"),
+                "blockchain_tx": t.get("blockchainTx", ""),
+            }
+            for t in raw
+        ]
+        return jsonify({"status": "ok", "transactions": recent})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 503
+
 
 @app.route("/tx-status/<int:transaction_id>")
 @login_required
 def tx_status(transaction_id):
     atm = _get_session_atm()
     if not atm:
-        return {"error": "no session"}, 401
+        return jsonify({"error": "no session"}), 401
     try:
         resp = _req.get(
             f"{MIDDLEWARE_URL}/atm/tx-status/{transaction_id}",
@@ -380,120 +415,8 @@ def tx_status(transaction_id):
         )
         return resp.json(), resp.status_code
     except Exception:
-        return {"error": "unavailable"}, 503
+        return jsonify({"error": "unavailable"}), 503
 
-# ── ADD THESE NEW ROUTES TO customer_app.py ──────────────────────────────────
-# Place them after the existing /deposit route and before the /tx-status route
-
-
-@app.route("/balance")
-@login_required
-def balance_page():
-    atm = _get_session_atm()
-    if not atm:
-        session.clear()
-        return redirect(url_for("login"))
-    try:
-        balance = atm.check_balance()
-    except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
-    return render_template(
-        "balance.html",
-        full_name=session.get("full_name", "Customer"),
-        balance=balance,
-    )
-
-
-@app.route("/transactions")
-@login_required
-def transactions_page():
-    atm = _get_session_atm()
-    if not atm:
-        session.clear()
-        return redirect(url_for("login"))
-    try:
-        raw_txns = atm.transactions_repo.get_transactions_for_account(session["account"], 20)
-        recent = [
-            {
-                "type":           t.get("transactionType") or t.get("type", ""),
-                "amount":         float(t.get("amount", 0) or 0),
-                "timestamp":      str(t.get("createdAt") or t.get("created_at", "")),
-                "status":         t.get("transactionStatus") or t.get("status", "APPROVED"),
-                "transaction_id": t.get("transactionId"),
-                "chain_status":   t.get("chainStatus", "PENDING_SUBMIT"),
-                "blockchain_tx":  t.get("blockchainTx", ""),
-            }
-            for t in raw_txns
-        ]
-    except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
-    return render_template(
-        "transactions.html",
-        full_name=session.get("full_name", "Customer"),
-        recent=recent,
-    )
-
-
-@app.route("/withdraw-page")
-@login_required
-def withdraw_page():
-    atm = _get_session_atm()
-    if not atm:
-        session.clear()
-        return redirect(url_for("login"))
-    try:
-        balance = atm.check_balance()
-    except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
-    return render_template(
-        "withdraw.html",
-        full_name=session.get("full_name", "Customer"),
-        balance=balance,
-        idempotency_key=_new_idempotency_key(),
-    )
-
-
-@app.route("/deposit-page")
-@login_required
-def deposit_page():
-    atm = _get_session_atm()
-    if not atm:
-        session.clear()
-        return redirect(url_for("login"))
-    try:
-        balance = atm.check_balance()
-    except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
-    return render_template(
-        "deposit.html",
-        full_name=session.get("full_name", "Customer"),
-        balance=balance,
-        idempotency_key=_new_idempotency_key(),
-    )
-
-
-# ── ALSO UPDATE the existing /dashboard route to pass last_qr only ────────────
-# Replace the existing dashboard() function with this:
-
-@app.route("/dashboard", methods=["GET"])
-@login_required
-def dashboard():
-    atm = _get_session_atm()
-    if not atm:
-        session.clear()
-        return redirect(url_for("login"))
-    try:
-        balance = atm.check_balance()
-    except Exception as e:
-        return render_template("config_error.html", error=str(e)), 503
-
-    last_qr = session.get("last_qr")
-    return render_template(
-        "dashboard.html",
-        full_name=session.get("full_name", "Customer"),
-        balance=balance,
-        last_qr=last_qr,
-    )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5001"))
