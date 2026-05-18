@@ -188,6 +188,17 @@ def _resolve_channel(x_channel: str | None) -> str:
     return transaction_logs.DEFAULT_CHANNEL
 
 
+def _require_idempotency_key(idempotency_key: str | None) -> str:
+    """Reject deposit/withdraw requests without a non-empty Idempotency-Key header."""
+    key = (idempotency_key or "").strip()
+    if not key:
+        raise HTTPException(
+            status_code=400,
+            detail="Idempotency-Key header is required for deposit and withdraw.",
+        )
+    return key
+
+
 def _audit(
     *,
     endpoint: str,
@@ -685,6 +696,7 @@ def atm_deposit(
     x_channel: str | None = Header(None, alias="X-Channel"),
 ):
     started = time.perf_counter()
+    idempotency_key = _require_idempotency_key(idempotency_key)
     channel = _resolve_channel(x_channel)
     session       = sessions.get(x_session_token)
     account_id    = session["account_id"]
@@ -799,6 +811,7 @@ def atm_withdraw(
     x_channel: str | None = Header(None, alias="X-Channel"),
 ):
     started = time.perf_counter()
+    idempotency_key = _require_idempotency_key(idempotency_key)
     channel = _resolve_channel(x_channel)
     session        = sessions.get(x_session_token)
     account_id     = session["account_id"]

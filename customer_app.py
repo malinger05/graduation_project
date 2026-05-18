@@ -140,21 +140,31 @@ def login_required(view):
     return wrapped
 
 
-def _attach_qr(txn):
+def _build_qr_payload(txn) -> dict | None:
     if not txn:
-        return
+        return None
     tx_hash = txn.get("blockchain_tx") or txn.get("blockchainTx")
     if not tx_hash:
-        return
-    verify_url = f"https://sepolia.etherscan.io/tx/{tx_hash}"
-    qr_payload = {
+        return None
+    verify_url = (
+        txn.get("verify_url")
+        or txn.get("verifyUrl")
+        or f"https://sepolia.etherscan.io/tx/{tx_hash}"
+    )
+    return {
         "type": txn.get("type", ""),
         "amount": float(txn.get("amount", 0) or 0),
         "verify_url": verify_url,
         "qr_data_uri": build_qr_data_uri(verify_url),
     }
-    session["qr_popup"] = qr_payload
-    session["last_qr"] = qr_payload
+
+
+def _attach_qr(txn) -> dict | None:
+    qr_payload = _build_qr_payload(txn)
+    if qr_payload:
+        session["qr_popup"] = qr_payload
+        session["last_qr"] = qr_payload
+    return qr_payload
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -316,12 +326,18 @@ def withdraw():
         return jsonify({"status": "error", "message": str(e)}), 503
 
     if ok and isinstance(result, dict):
-        _attach_qr({"type": "WITHDRAW", "amount": amount, "blockchain_tx": result.get("blockchainTx")})
+        qr = _attach_qr({
+            "type": "WITHDRAW",
+            "amount": amount,
+            "blockchain_tx": result.get("blockchainTx"),
+            "verify_url": result.get("verifyUrl"),
+        })
         return jsonify({
             "status": "ok",
             "message": msg,
             "newBalance": result.get("newBalance", 0),
             "blockchainTx": result.get("blockchainTx", ""),
+            "qr": qr,
         })
 
     return jsonify({"status": "error", "message": msg}), 400
@@ -352,12 +368,18 @@ def deposit():
         return jsonify({"status": "error", "message": str(e)}), 503
 
     if ok and isinstance(result, dict):
-        _attach_qr({"type": "DEPOSIT", "amount": amount, "blockchain_tx": result.get("blockchainTx")})
+        qr = _attach_qr({
+            "type": "DEPOSIT",
+            "amount": amount,
+            "blockchain_tx": result.get("blockchainTx"),
+            "verify_url": result.get("verifyUrl"),
+        })
         return jsonify({
             "status": "ok",
             "message": msg,
             "newBalance": result.get("newBalance", 0),
             "blockchainTx": result.get("blockchainTx", ""),
+            "qr": qr,
         })
 
     return jsonify({"status": "error", "message": msg}), 400

@@ -66,22 +66,27 @@ def begin(
                   call `finish()` once the response is ready.
 
     Raises:
+        - HTTPException(400) : Idempotency-Key header missing or blank.
         - HTTPException(422) : same key was used before with a different body.
         - HTTPException(409) : a previous attempt with this key is still
                                in-flight (and not yet stale).
 
-    No-ops (returns None) when:
-        - idempotency_key is None        (client opted out)
-        - the middleware DB is disabled  (MIDDLEWARE_DB_URL unset)
+    No-ops (returns None) when the middleware DB is disabled (MIDDLEWARE_DB_URL unset).
     """
-    if not idempotency_key or not db.is_enabled():
+    key = (idempotency_key or "").strip()
+    if not key:
+        raise HTTPException(
+            status_code=400,
+            detail="Idempotency-Key header is required for deposit and withdraw.",
+        )
+    if not db.is_enabled():
         return None
 
     fp  = _fingerprint(endpoint, account_number, request_body)
     now = datetime.now(timezone.utc)
 
     with db.db_session() as s:
-        rec = s.get(IdempotencyRecord, (account_number, idempotency_key))
+        rec = s.get(IdempotencyRecord, (account_number, key))
 
         if rec is not None:
             # Expired? Drop it and treat as fresh.
@@ -112,7 +117,7 @@ def begin(
         # Fresh request — record the in-progress marker.
         s.add(IdempotencyRecord(
             account_number      = account_number,
-            idempotency_key     = idempotency_key,
+            idempotency_key     = key,
             endpoint            = endpoint,
             request_fingerprint = fp,
             status              = "in_progress",
@@ -132,14 +137,14 @@ def finish(
     Mark the idempotency record as completed and cache the response so future
     retries with the same key return the same answer.
 
-    Safe to call when idempotency_key is None or the DB is disabled — both
-    cases are no-ops.
+    Safe to call when the DB is disabled (no-op). Requires the same key passed to begin().
     """
-    if not idempotency_key or not db.is_enabled():
+    key = (idempotency_key or "").strip()
+    if not key or not db.is_enabled():
         return
 
     with db.db_session() as s:
-        rec = s.get(IdempotencyRecord, (account_number, idempotency_key))
+        rec = s.get(IdempotencyRecord, (account_number, key))
         if rec is None:
             return  # nothing to update — begin() was never called or row was evicted
         rec.status               = "completed"

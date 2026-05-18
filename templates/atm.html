@@ -184,10 +184,30 @@ html,body{
 .menu-card-label{font-size:20px;font-weight:800;color:var(--navy);}
 .menu-card-sub{font-size:14px;color:var(--text-muted);margin-top:4px;}
 .logout-bar{padding:9px 14px;display:flex;align-items:center;justify-content:space-between;border-top:1px solid #EAE7E0;}
-.qr-mini{display:flex;align-items:center;gap:8px;}
+.qr-mini{display:flex;align-items:center;gap:8px;cursor:pointer;border-radius:8px;padding:4px 6px;margin:-4px -6px;}
+.qr-mini:hover{background:#F0EDE6;}
 .qr-mini img{width:32px;height:32px;border-radius:5px;border:1px solid #E8E4DC;}
 .qr-mini-text{font-size:9px;color:var(--text-muted);line-height:1.5;}
 .qr-mini-text a{color:#4A90E8;text-decoration:none;font-family:var(--mono);}
+.qr-modal-overlay{
+  position:fixed;inset:0;z-index:10001;
+  background:rgba(6,10,18,0.88);
+  display:flex;align-items:center;justify-content:center;padding:24px;
+}
+.qr-modal-overlay.hidden{display:none;}
+.qr-modal-card{
+  background:#fff;border-radius:16px;padding:24px 22px;max-width:360px;width:100%;
+  box-shadow:0 24px 60px rgba(0,0,0,0.35);
+}
+.qr-modal-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px;}
+.qr-modal-title{font-size:18px;font-weight:800;color:var(--navy);}
+.qr-modal-sub{font-size:13px;color:var(--text-muted);margin-bottom:16px;}
+.qr-modal-close{background:none;border:none;cursor:pointer;color:var(--text-muted);padding:4px;}
+.qr-modal-img-wrap{background:#F8F6F1;border-radius:12px;padding:16px;display:flex;justify-content:center;margin-bottom:14px;}
+.qr-modal-img{width:100%;max-width:220px;display:block;}
+.qr-modal-link{display:block;text-align:center;font-size:13px;color:#4A90E8;font-family:var(--mono);}
+.success-qr-btn{margin-top:12px;background:#F8F6F1;color:var(--navy);border:1px solid #E8E4DC;}
+.success-qr-btn:hover{background:#F0EDE6;}
 
 /* ── AMOUNT ── */
 #page-amount{background:var(--offwhite);display:flex;flex-direction:column;}
@@ -451,9 +471,9 @@ html,body{
       </div>
     </div>
     <div class="logout-bar">
-      <div class="qr-mini" id="qr-mini-wrap" style="display:none;">
+      <div class="qr-mini" id="qr-mini-wrap" style="display:none;" onclick="showQrModal()" title="View last transaction on-chain">
         <img id="qr-mini-img" src="" alt="QR">
-        <div class="qr-mini-text">Last tx · <a id="qr-mini-link" href="#" target="_blank">Etherscan ↗</a></div>
+        <div class="qr-mini-text">Last tx · <span>tap to enlarge</span></div>
       </div>
       <div style="flex:1;"></div>
       <button class="btn btn-red btn-sm" onclick="doLogout()">End session</button>
@@ -544,6 +564,7 @@ html,body{
         <div class="receipt-row"><span class="rr-label">New balance</span><span class="rr-val" id="receipt-balance">—</span></div>
         <div class="receipt-row"><span class="rr-label">Status</span><span class="rr-val green">Confirmed</span></div>
       </div>
+      <button type="button" class="btn btn-full success-qr-btn" id="success-qr-btn" style="display:none;" onclick="showQrModal()">View on-chain QR</button>
       <button class="btn btn-navy btn-full" onclick="goTo('menu')">Back to menu</button>
     </div>
   </div>
@@ -622,6 +643,20 @@ html,body{
 </div><!-- screen -->
 </div><!-- atm-shell -->
 
+<div id="qr-modal-overlay" class="qr-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="qr-modal-title">
+  <div class="qr-modal-card">
+    <div class="qr-modal-top">
+      <h2 id="qr-modal-title" class="qr-modal-title">On-chain proof</h2>
+      <button type="button" class="qr-modal-close" id="qr-modal-close" aria-label="Close">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="qr-modal-sub" id="qr-modal-sub">Last transaction</p>
+    <div class="qr-modal-img-wrap"><img class="qr-modal-img" id="qr-modal-img" src="" alt="Transaction QR code"></div>
+    <a class="qr-modal-link" id="qr-modal-link" href="#" target="_blank" rel="noopener noreferrer">Open on Etherscan ↗</a>
+  </div>
+</div>
+
 <div id="idle-prompt-overlay" class="idle-prompt-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="idle-prompt-title">
   <div class="idle-prompt-card">
     <h2 id="idle-prompt-title" class="idle-prompt-title">Would you like another transaction?</h2>
@@ -644,6 +679,38 @@ const S = {
   loginStep: 1,
   loginAccount: '',
 };
+
+let lastQr = null;
+{% if last_qr %}
+lastQr = {{ last_qr | tojson }};
+{% endif %}
+
+function applyLastQr(qr){
+  if(!qr||!qr.verify_url)return;
+  lastQr=qr;
+  document.getElementById('qr-mini-wrap').style.display='flex';
+  document.getElementById('qr-mini-img').src=qr.qr_data_uri;
+  var qrBtn=document.getElementById('success-qr-btn');
+  if(qrBtn)qrBtn.style.display='block';
+}
+
+function hideQrModal(){
+  document.getElementById('qr-modal-overlay').classList.add('hidden');
+}
+
+function showQrModal(){
+  if(!lastQr||!lastQr.verify_url)return;
+  var label=(lastQr.type||'Transaction')+' · $'+Number(lastQr.amount||0).toFixed(2);
+  document.getElementById('qr-modal-sub').textContent=label;
+  document.getElementById('qr-modal-img').src=lastQr.qr_data_uri;
+  document.getElementById('qr-modal-link').href=lastQr.verify_url;
+  document.getElementById('qr-modal-overlay').classList.remove('hidden');
+}
+
+document.getElementById('qr-modal-close').addEventListener('click',hideQrModal);
+document.getElementById('qr-modal-overlay').addEventListener('click',function(e){
+  if(e.target===e.currentTarget)hideQrModal();
+});
 
 // ── Clock ──
 function tick(){var n=new Date();var el=document.getElementById('clock');if(el)el.textContent=n.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});}
@@ -745,11 +812,7 @@ document.getElementById('login-input').addEventListener('keydown',e=>{if(e.key==
 function enterMenu(){
   document.getElementById('menu-name').textContent=S.name;
   document.getElementById('menu-balance').textContent='$'+S.balance.toFixed(2);
-  {% if last_qr %}
-  document.getElementById('qr-mini-wrap').style.display='flex';
-  document.getElementById('qr-mini-img').src='{{ last_qr.qr_data_uri }}';
-  document.getElementById('qr-mini-link').href='{{ last_qr.verify_url }}';
-  {% endif %}
+  if(lastQr)applyLastQr(lastQr);
   goTo('menu');
 }
 
@@ -763,6 +826,11 @@ function hideIdlePrompt(){
 
 function doLogout(){
   hideIdlePrompt();
+  hideQrModal();
+  lastQr=null;
+  document.getElementById('qr-mini-wrap').style.display='none';
+  var qrBtn=document.getElementById('success-qr-btn');
+  if(qrBtn)qrBtn.style.display='none';
   fetch('/logout',{method:'POST'}).finally(()=>{
     S.account='';S.name='Customer';S.balance=0;S.flow='';
     document.getElementById('header-nav').classList.remove('visible');
@@ -896,6 +964,7 @@ function confirmAmount(){
     if(ok&&d.status==='ok'){
       S.balance=parseFloat(d.newBalance||S.balance);
       document.getElementById('menu-balance').textContent='$'+S.balance.toFixed(2);
+      if(d.qr)applyLastQr(d.qr);
       if(S.flow==='withdraw'){
         document.getElementById('cash-note-text').textContent='$'+amt;
         document.getElementById('cash-amount-display').textContent='$'+amt.toFixed(2);
@@ -903,13 +972,17 @@ function confirmAmount(){
         var note=document.getElementById('cash-note');
         note.style.animation='none';note.offsetHeight;note.style.animation='';
         goTo('cash');
-        setTimeout(()=>goTo('menu'),4000);
+        setTimeout(function(){
+          goTo('menu');
+          if(lastQr)showQrModal();
+        },4000);
       } else {
         document.getElementById('success-amount').textContent='+$'+amt.toFixed(2);
         document.getElementById('receipt-account').textContent='•••• '+S.account.slice(-4);
         document.getElementById('receipt-amount').textContent='+$'+amt.toFixed(2);
         document.getElementById('receipt-balance').textContent='$'+S.balance.toFixed(2);
         goTo('success');
+        if(d.qr)showQrModal();
       }
     } else {
       document.getElementById('error-title').textContent=S.flow==='withdraw'?'Withdrawal failed':'Deposit failed';
@@ -931,11 +1004,7 @@ S.name = "{{ full_name }}";
 S.balance = {{ balance }};
 document.getElementById('status-account').textContent = 'ACC {{ account }}';
 document.getElementById('header-nav').classList.add('visible');
-{% if last_qr %}
-document.getElementById('qr-mini-wrap').style.display='flex';
-document.getElementById('qr-mini-img').src='{{ last_qr.qr_data_uri }}';
-document.getElementById('qr-mini-link').href='{{ last_qr.verify_url }}';
-{% endif %}
+if(lastQr)applyLastQr(lastQr);
 enterMenu();
 {% endif %}
 
