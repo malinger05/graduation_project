@@ -28,7 +28,8 @@ from atm_architecture import (
 
 app = Flask(__name__)
 app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
-
+app.config["SESSION_COOKIE_NAME"] = "atm_session"   # ← add this
+app.config["SESSION_COOKIE_PATH"] = "/"
 
 @app.context_processor
 def inject_idle_session_config():

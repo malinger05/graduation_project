@@ -40,7 +40,8 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PANEL_PASSWORD", "admin123")
 
 app = Flask(__name__)
 app.secret_key = get_secret("ADMIN_SECRET_KEY", "admin-change-me", allow_env_fallback=True)
-
+app.config["SESSION_COOKIE_NAME"] = "admin_session"   # ← add this
+app.config["SESSION_COOKIE_PATH"] = "/"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -188,7 +189,6 @@ def register_customer():
         return render_template("register.html")
 
     f = request.form
-    errors = []
 
     # Step 1: Create customer
     customer_payload = {
@@ -202,8 +202,16 @@ def register_customer():
 
     resp1 = _cb("post", "/customers", json=customer_payload)
     if not resp1 or not resp1.ok:
-        err = resp1.json() if resp1 else {"message": "Cannot reach Core Banking"}
-        flash(f"Customer creation failed: {err.get('message', resp1.text if resp1 else 'connection error')}")
+        print("STATUS:", resp1.status_code)
+        print("RAW BODY:", resp1.text)
+        try:
+            err = resp1.json()
+            print("JSON:", err)
+            detail = err.get("message") or resp1.text
+        except Exception:
+            detail = resp1.text or "Unknown error"
+
+        flash(f"Customer creation failed: {detail}")
         return render_template("register.html", form=f)
 
     customer = resp1.json()
@@ -219,8 +227,12 @@ def register_customer():
     resp2 = _cb("post", f"/customers/{customer_id}/accounts",
                 json={"initialBalance": initial_balance})
     if not resp2 or not resp2.ok:
-        err = resp2.json() if resp2 else {}
-        flash(f"Account creation failed: {err.get('message', 'error')}. Customer #{customer_id} was created.")
+        try:
+            err2 = resp2.json() if resp2 else {}
+            detail2 = err2.get("message", resp2.text if resp2 else "error")
+        except Exception:
+            detail2 = "error"
+        flash(f"Account creation failed: {detail2}. Customer #{customer_id} was created.")
         return render_template("register.html", form=f)
 
     account = resp2.json()
@@ -229,7 +241,7 @@ def register_customer():
     pin = f.get("pin", "").strip()
     if pin and len(pin) >= 4:
         resp3 = _cb("post", "/atm/set-pin",
-                    json={"customerId": str(customer_id), "pin": pin})
+            json={"accountId": str(account['accountId']), "pin": pin})
         if not resp3 or not resp3.ok:
             flash(f"PIN set failed — customer #{customer_id} and account created but PIN not set.")
             return redirect(url_for("customers"))
