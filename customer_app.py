@@ -337,9 +337,32 @@ def withdraw():
             "message": msg,
             "newBalance": result.get("newBalance", 0),
             "blockchainTx": result.get("blockchainTx", ""),
+            "middlewareTxId": result.get("middlewareTxId") or result.get("transactionId"),
+            "transactionId": result.get("transactionId"),
             "qr": qr,
         })
 
+    return jsonify({"status": "error", "message": msg}), 400
+
+
+@app.route("/ack", methods=["POST"])
+@login_required
+def ack_dispense():
+    data = request.get_json(silent=True) or request.form
+    try:
+        middleware_tx_id = int(data.get("middlewareTxId") or data.get("transactionId") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "message": "Invalid transaction id."}), 400
+    if middleware_tx_id <= 0:
+        return jsonify({"status": "error", "message": "Transaction id required."}), 400
+
+    atm = _get_session_atm()
+    if not atm:
+        return jsonify({"status": "error", "message": "Session expired."}), 401
+
+    ok, msg = atm.accounts_repo.client.confirm_dispense(middleware_tx_id)
+    if ok:
+        return jsonify({"status": "ok", "message": msg, "middlewareTxId": middleware_tx_id})
     return jsonify({"status": "error", "message": msg}), 400
 
 

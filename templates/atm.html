@@ -336,10 +336,11 @@ html,body{
 }
 .countdown-label{font-size:12px;color:rgba(255,255,255,0.3);margin-top:4px;letter-spacing:0.06em;text-transform:uppercase;}
 .locked-hint{font-size:14px;color:rgba(255,255,255,0.25);margin-top:16px;}
-.error-inner{text-align:center;padding:28px;max-width:320px;}
+#page-error{background:var(--offwhite);justify-content:center;align-items:center;}
+.error-inner{text-align:center;padding:28px;max-width:360px;}
 .error-icon{font-size:40px;margin-bottom:14px;}
-.error-title{font-size:18px;font-weight:700;color:var(--white);margin-bottom:6px;}
-.error-msg-text{font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:20px;line-height:1.6;}
+.error-title{font-size:18px;font-weight:700;color:var(--navy);margin-bottom:6px;}
+.error-msg-text{font-size:13px;color:var(--text-muted);margin-bottom:20px;line-height:1.6;word-break:break-word;}
 
 /* Idle session prompt (inactivity) */
 .idle-prompt-overlay{
@@ -943,6 +944,17 @@ function numDel(){
   document.getElementById('amount-display').textContent=parseInt(S.amount||'0').toLocaleString();
 }
 
+function formatApiError(d, r){
+  if(!d||typeof d!=='object')return 'Request failed ('+(r&&r.status?r.status:'?')+').';
+  if(d.message&&String(d.message).trim())return String(d.message);
+  if(d.detail){
+    if(typeof d.detail==='string')return d.detail;
+    if(Array.isArray(d.detail))return d.detail.map(function(x){return x.msg||x.message||JSON.stringify(x);}).join('; ');
+    return JSON.stringify(d.detail);
+  }
+  return 'Please try again.';
+}
+
 function confirmAmount(){
   var amt=parseInt(S.amount||'0');
   if(amt<=0){document.getElementById('amount-display').classList.add('has-error');document.getElementById('amount-hint').textContent='Please enter a valid amount';return;}
@@ -959,8 +971,8 @@ function confirmAmount(){
     headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'amount='+amt+'&idempotency_key='+idem
   })
-  .then(r=>r.json().then(d=>({ok:r.ok,d})))
-  .then(({ok,d})=>{
+  .then(r=>r.json().then(d=>({ok:r.ok,status:r.status,d})))
+  .then(({ok,status,d})=>{
     if(ok&&d.status==='ok'){
       S.balance=parseFloat(d.newBalance||S.balance);
       document.getElementById('menu-balance').textContent='$'+S.balance.toFixed(2);
@@ -971,8 +983,16 @@ function confirmAmount(){
         document.getElementById('cash-new-balance').textContent='$'+S.balance.toFixed(2);
         var note=document.getElementById('cash-note');
         note.style.animation='none';note.offsetHeight;note.style.animation='';
+        var ackId=d.middlewareTxId||d.transactionId;
         goTo('cash');
         setTimeout(function(){
+          if(ackId){
+            fetch('/ack',{
+              method:'POST',
+              headers:{'Content-Type':'application/x-www-form-urlencoded'},
+              body:'middlewareTxId='+encodeURIComponent(ackId)
+            }).catch(function(){});
+          }
           goTo('menu');
           if(lastQr)showQrModal();
         },4000);
@@ -986,13 +1006,13 @@ function confirmAmount(){
       }
     } else {
       document.getElementById('error-title').textContent=S.flow==='withdraw'?'Withdrawal failed':'Deposit failed';
-      document.getElementById('error-msg').textContent=d.message||'Please try again.';
+      document.getElementById('error-msg').textContent=formatApiError(d,{status:status});
       goTo('error');
     }
   })
-  .catch(()=>{
+  .catch(function(err){
     document.getElementById('error-title').textContent='Connection error';
-    document.getElementById('error-msg').textContent='Cannot reach Core Banking. Make sure all services are running.';
+    document.getElementById('error-msg').textContent='Cannot reach the server. Check Flask, middleware, and Core Banking are running.';
     goTo('error');
   });
 }

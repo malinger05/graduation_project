@@ -160,8 +160,8 @@ class MiddlewareClient:
     def withdraw(self, amount: float, *, idempotency_key: str) -> tuple[bool, str, dict | None]:
         """
         POST /atm/withdraw → middleware → Spring Boot /accounts/{id}/withdraw.
-        Middleware starts a 30s ACK timer; if ATM doesn't confirm cash dispensed,
-        the debit is reversed (atomicity rollback).
+        Core Banking tracks dispense state; call confirm_dispense (via /atm/ack)
+        after cash is dispensed or the bank scheduler auto-reverses.
         """
         try:
             resp = requests.post(
@@ -176,31 +176,40 @@ class MiddlewareClient:
         if resp.status_code == 400:
             return False, "Insufficient funds", None
         if not resp.ok:
-            return False, f"Withdraw failed: {resp.text}", None
+            try:
+                err = resp.json()
+                detail = err.get("detail", resp.text)
+                if isinstance(detail, list):
+                    detail = "; ".join(
+                        str(x.get("msg", x)) for x in detail if isinstance(x, dict)
+                    ) or resp.text
+            except Exception:
+                detail = resp.text
+            return False, f"Withdraw failed: {detail}", None
 
         data = resp.json()
         self._cached_balance = float(data.get("newBalance", self._cached_balance))
-
-        # Send ACK — simulates physical cash-dispense confirmation.
-        # On real ATM hardware this fires AFTER the cash drawer opens.
-        mid_tx_id = data.get("middlewareTxId")
-        if mid_tx_id:
-            try:
-                requests.post(
-                    f"{self.base_url}/atm/ack",
-                    json={"middlewareTxId": mid_tx_id},
-                    headers=self._headers(),
-                    timeout=10,
-                )
-            except Exception:
-                # No ACK → atomicity monitor will automatically reverse the debit.
-                pass
 
         msg = f"WITHDRAW ${amount:.2f}. New balance: ${self._cached_balance:.2f}"
         if not data.get("blockchainTx"):
             msg += " Recorded locally; blockchain sync will retry shortly."
 
         return True, msg, data
+
+    def confirm_dispense(self, middleware_tx_id: int) -> tuple[bool, str]:
+        """POST /atm/ack → Core Banking confirm-dispense after cash is dispensed."""
+        try:
+            resp = requests.post(
+                f"{self.base_url}/atm/ack",
+                json={"middlewareTxId": middleware_tx_id},
+                headers=self._headers(),
+                timeout=10,
+            )
+        except requests.exceptions.ConnectionError:
+            return False, "Cannot reach middleware"
+        if not resp.ok:
+            return False, f"Dispense confirm failed: {resp.text}"
+        return True, "Cash dispense confirmed"
 
     # ── Transaction history ───────────────────────────────────────────────────
 

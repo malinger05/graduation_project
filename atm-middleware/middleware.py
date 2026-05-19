@@ -6,11 +6,11 @@ Bridge: ATM → Middleware → Core Banking (Spring Boot).
 
 Responsibilities:
   - Forward login / deposit / withdraw to Core Banking
-  - Track login lockouts in memory
+  - Track login lockouts (Postgres when configured, else in-memory)
   - Manage login sessions (Postgres when configured, else in-memory)
   - Hash the confirmed transaction data and log it to Ethereum Sepolia
   - PATCH the canonical hash + blockchainTx back to Core Banking
-  - ACK / atomicity timer for withdrawals (in memory)
+  - Forward withdraw dispense ACK to Core Banking (state owned there)
   - Run blockchain reconciliation worker threads (submit-retry, confirm-poll,
     tamper-check) — all going through Spring Boot's /admin/transactions/*
   - Persist middleware-side operational state (idempotency, sessions,
@@ -23,7 +23,8 @@ Intentionally NOT here:
   - No transaction records. Core Banking stores transactions.
 
 The middleware's own database holds ONLY operational state that the middleware
-itself owns end-to-end (idempotency, sessions, transaction_logs, correlation_logs;
+itself owns end-to-end (idempotency, sessions, login_lockouts, transaction_logs,
+correlation_logs;
 routing_config still planned). It never duplicates banking data.
 """
 
@@ -60,6 +61,7 @@ import blockchain_worker
 import db
 import correlation
 import idempotency
+import lockouts
 import sessions
 import retention
 import transaction_logs
@@ -75,6 +77,7 @@ SESSION_TTL_SECONDS   = config.SESSION_TTL_SECONDS
 sessions.configure(SESSION_TTL_SECONDS)
 LOCKOUT_MAX_ATTEMPTS  = config.LOCKOUT_MAX_ATTEMPTS
 LOCKOUT_MINUTES       = [5, 10, 15]  # progressive lockout durations
+lockouts.configure(LOCKOUT_MAX_ATTEMPTS, LOCKOUT_MINUTES)
 
 CONTRACT_ADDRESS  = config.CONTRACT_ADDRESS
 ETH_PRIVATE_KEY   = config.ETH_PRIVATE_KEY
@@ -112,7 +115,6 @@ def _get_admin_client() -> AdminClient | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    threading.Thread(target=_atomicity_monitor, daemon=True).start()
     threading.Thread(target=_session_cleanup, daemon=True).start()
     threading.Thread(target=_retention_cleanup, daemon=True).start()
 
@@ -313,12 +315,15 @@ def _verify_log_on_chain(canonical_hash: str) -> bool:
 
 
 def _session_cleanup() -> None:
-    """Evict sessions idle longer than SESSION_TTL_SECONDS. Runs every 60s."""
+    """Evict idle sessions and clear expired login lockouts. Runs every 60s."""
     while True:
         time.sleep(60)
         n = sessions.cleanup_expired()
         if n:
             print(f"[Sessions] Evicted {n} idle session(s)")
+        cleared = lockouts.cleanup_expired()
+        if cleared:
+            print(f"[Lockouts] Cleared {cleared} expired lockout(s)")
 
 
 def _retention_cleanup() -> None:
@@ -338,91 +343,14 @@ def _retention_cleanup() -> None:
             print(f"[Retention] Cleanup failed: {e}")
 
 
-# ── In-memory lockout tracker ─────────────────────────────────────────────────
-# Maps account_number → {failed_attempts, locked_until (epoch float or None)}
-
-_lockouts:      dict[str, dict] = {}
-_lockouts_lock: threading.Lock  = threading.Lock()
-
-
-def _check_lockout(account_number: str) -> dict | None:
-    """Returns lockout info dict if locked, None if free to attempt."""
-    with _lockouts_lock:
-        entry = _lockouts.get(account_number)
-        if not entry:
-            return None
-        locked_until = entry.get("locked_until")
-        if locked_until and time.time() < locked_until:
-            remaining = int(locked_until - time.time())
-            return {"remaining_lock_seconds": remaining, "lock_minutes": remaining // 60}
-        # Lock expired — clear it
-        if locked_until and time.time() >= locked_until:
-            entry["locked_until"]    = None
-            entry["failed_attempts"] = 0
-        return None
-
-
-def _record_failed_attempt(account_number: str) -> dict:
-    """Increment failure counter, apply progressive lockout. Returns response dict."""
-    with _lockouts_lock:
-        entry = _lockouts.setdefault(account_number, {"failed_attempts": 0, "locked_until": None})
-        entry["failed_attempts"] += 1
-        failed = entry["failed_attempts"]
-
-        if failed % LOCKOUT_MAX_ATTEMPTS == 0:
-            level        = min(failed // LOCKOUT_MAX_ATTEMPTS, len(LOCKOUT_MINUTES)) - 1
-            lock_minutes = LOCKOUT_MINUTES[level]
-            entry["locked_until"] = time.time() + (lock_minutes * 60)
-            return {"status": "locked",
-                    "remaining_lock_seconds": lock_minutes * 60,
-                    "lock_minutes": lock_minutes}
-
-        attempts_to_next = LOCKOUT_MAX_ATTEMPTS - (failed % LOCKOUT_MAX_ATTEMPTS)
-        return {"status": "invalid", "attempts_to_next_lock": attempts_to_next}
-
-
-def _reset_lockout(account_number: str) -> None:
-    with _lockouts_lock:
-        _lockouts.pop(account_number, None)
-
-
-# ── In-memory ACK tracker (withdraw atomicity) ────────────────────────────────
-# Maps middleware_tx_id → {account_id, amount, jwt, deadline}
-
-_pending_acks: dict[int, dict] = {}
-_ack_counter  = 0
-_ack_lock     = threading.Lock()
-
-
-def _new_ack_id() -> int:
-    global _ack_counter
-    with _ack_lock:
-        _ack_counter += 1
-        return _ack_counter
-
-
-def _atomicity_monitor() -> None:
-    """Roll back any withdrawal that doesn't get an ACK within the timeout."""
-    while True:
-        now     = time.time()
-        expired = [(tid, d) for tid, d in list(_pending_acks.items()) if now > d["deadline"]]
-        for tx_id, data in expired:
-            _pending_acks.pop(tx_id, None)
-            print(f"[Atomicity] No ACK for tx #{tx_id} — reversing ${data['amount']}")
-            try:
-                _cb_post(f"/accounts/{data['account_id']}/deposit",
-                         {"amountDeposit": data["amount"]}, data["jwt"])
-            except Exception as e:
-                print(f"[Atomicity] Reversal failed for tx #{tx_id}: {e}")
-        time.sleep(1)
-
-
 # ── Core Banking HTTP client ──────────────────────────────────────────────────
 
-def _cb_post(path: str, body: dict, token: str | None = None):
+def _cb_post(path: str, body: dict, token: str | None = None, extra_headers: dict | None = None):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if extra_headers:
+        headers.update(extra_headers)
     try:
         resp = requests.post(f"{CORE_BANKING_URL}{path}", json=body,
                              headers=headers, timeout=(3, 12))
@@ -465,7 +393,7 @@ def atm_login(
         account_number=req.accountNumber, endpoint="/atm/login",
     )
 
-    lockout = _check_lockout(req.accountNumber)
+    lockout = lockouts.check(req.accountNumber)
     if lockout:
         body = {"status": "locked", **lockout}
         correlation.log_step(
@@ -488,7 +416,7 @@ def atm_login(
     resp = _cb_post("/atm/login", {"accountNumber": req.accountNumber, "pin": req.pin})
 
     if resp.status_code == 401:
-        result = _record_failed_attempt(req.accountNumber)
+        result = lockouts.record_failure(req.accountNumber)
         correlation.log_step(
             corr, "core_banking_response", "core_banking", "error",
             account_number=req.accountNumber, endpoint="/atm/login",
@@ -530,7 +458,7 @@ def atm_login(
         corr, "core_banking_response", "core_banking", "ok",
         account_number=req.accountNumber, endpoint="/atm/login",
     )
-    _reset_lockout(req.accountNumber)
+    lockouts.reset(req.accountNumber)
 
     session_token = sessions.create(
         jwt=data["token"],
@@ -853,7 +781,12 @@ def atm_withdraw(
         account_number=account_number, endpoint="/atm/withdraw",
         detail={"amount": req.amount},
     )
-    resp = _cb_post(f"/accounts/{account_id}/withdraw", {"amountWithdraw": req.amount}, jwt)
+    resp = _cb_post(
+        f"/accounts/{account_id}/withdraw",
+        {"amountWithdraw": req.amount},
+        jwt,
+        extra_headers={"X-Dispense-Ack-Timeout-Seconds": str(ACK_TIMEOUT_SECONDS)},
+    )
     if resp.status_code == 400:
         correlation.log_step(
             corr, "core_banking_response", "core_banking", "error",
@@ -894,18 +827,10 @@ def atm_withdraw(
         correlation_id=corr,
     )
 
-    # 4. Register ACK timer — if ATM doesn't confirm cash dispensed within
-    #    ACK_TIMEOUT_SECONDS, atomicity monitor re-deposits the amount
-    ack_id = _new_ack_id()
-    _pending_acks[ack_id] = {
-        "account_id": account_id,
-        "amount":     req.amount,
-        "jwt":        jwt,
-        "deadline":   time.time() + ACK_TIMEOUT_SECONDS,
-    }
-
+    # 4. Core Banking owns dispense state (PENDING_DISPENSE until /confirm-dispense
+    #    or scheduler reversal). middlewareTxId is the Core Banking transaction id.
     response = {
-        "middlewareTxId": ack_id,
+        "middlewareTxId": tx_id,
         "transactionId":  tx_id,
         "status":         "SUCCESS",
         "amount":         req.amount,
@@ -942,17 +867,53 @@ def atm_ack(
     x_session_token: str = Header(...),
     x_channel: str | None = Header(None, alias="X-Channel"),
 ):
-    """ATM calls this after physically dispensing cash — cancels the rollback timer."""
+    """ATM calls this after physically dispensing cash — confirms dispense in Core Banking."""
     started = time.perf_counter()
     channel = _resolve_channel(x_channel)
     session = sessions.get(x_session_token)
-    _pending_acks.pop(req.middlewareTxId, None)
-    body = {"status": "CONFIRMED", "middlewareTxId": req.middlewareTxId}
+    account_id = session["account_id"]
+    account_number = session["account_number"]
+    jwt = session["jwt"]
+    tx_id = req.middlewareTxId
+
+    corr = correlation.new_correlation_id()
+    correlation.log_step(
+        corr, "request_received", "middleware", "ok",
+        account_number=account_number, endpoint="/atm/ack",
+        detail={"transactionId": tx_id},
+    )
+    resp = _cb_post(
+        f"/accounts/{account_id}/transactions/{tx_id}/confirm-dispense",
+        {},
+        jwt,
+    )
+    if not resp.ok:
+        correlation.log_step(
+            corr, "core_banking_confirm_dispense", "core_banking", "error",
+            account_number=account_number, endpoint="/atm/ack",
+            message=resp.text, detail={"status_code": resp.status_code},
+        )
+        raise HTTPException(resp.status_code, resp.text)
+
+    cb_body = resp.json()
+    correlation.log_step(
+        corr, "core_banking_confirm_dispense", "core_banking", "ok",
+        account_number=account_number, endpoint="/atm/ack",
+        detail={"dispenseStatus": cb_body.get("dispenseStatus")},
+    )
+
+    body = {
+        "status":         "CONFIRMED",
+        "middlewareTxId": tx_id,
+        "transactionId":  tx_id,
+        "dispenseStatus": cb_body.get("dispenseStatus", "DISPENSED"),
+    }
     _audit(
         endpoint="/atm/ack", http_method="POST", outcome="success",
         status_code=200, started=started,
-        account_number=session["account_number"], channel=channel,
+        account_number=account_number, channel=channel,
         request_body=req.model_dump(), response_body=body,
+        correlation_id=corr,
     )
     return body
 

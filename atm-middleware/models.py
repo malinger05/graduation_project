@@ -4,6 +4,7 @@ models.py  —  SQLAlchemy table definitions for the middleware's own database.
 Tables:
   - IdempotencyRecord  (idempotency_records)
   - SessionState       (session_state)
+  - LoginLockout       (login_lockouts)
   - TransactionLog     (transaction_logs)
   - CorrelationLog     (correlation_logs)
 
@@ -80,6 +81,22 @@ class SessionState(Base):
 
     last_active    = Column(DateTime(timezone=True), nullable=False)
     created_at     = Column(DateTime(timezone=True), nullable=False)
+
+
+class LoginLockout(Base):
+    """
+    Failed login attempts and progressive lockout per account.
+
+    Owned by the middleware (not Core Banking). Survives process restarts
+    when the middleware DB is configured.
+    """
+
+    __tablename__ = "login_lockouts"
+
+    account_number  = Column(String, primary_key=True)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+    locked_until    = Column(DateTime(timezone=True), nullable=True)
+    updated_at      = Column(DateTime(timezone=True), nullable=False)
 
 
 class TransactionLog(Base):
