@@ -55,6 +55,27 @@ class MiddlewareClient:
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
+    def check_account_status(self, account_number: str) -> dict:
+        """POST /atm/account-status — lockout / PIN-reset state without a PIN."""
+        try:
+            resp = requests.post(
+                f"{self.base_url}/atm/account-status",
+                json={"accountNumber": account_number},
+                headers={"X-Channel": "ATM_WEB"},
+                timeout=10,
+            )
+        except requests.exceptions.ConnectionError:
+            raise RuntimeError(
+                f"Cannot reach middleware at {self.base_url}.\n"
+                "Start it: cd atm-middleware && python3 middleware.py"
+            )
+        try:
+            return resp.json()
+        except ValueError:
+            raise RuntimeError(
+                f"Middleware returned non-JSON (HTTP {resp.status_code}): {resp.text[:200]}"
+            )
+
     def authenticate_with_status(self, account_number: str, pin: str) -> dict:
         """
         POST /atm/login → middleware → Spring Boot /atm/login.
@@ -74,15 +95,29 @@ class MiddlewareClient:
                 "Start it: cd atm-middleware && python3 middleware.py"
             )
 
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            raise RuntimeError(
+                f"Middleware returned non-JSON (HTTP {resp.status_code}): {resp.text[:200]}"
+            )
         status = data.get("status", "invalid")
 
-        if status == "locked":
+        if status == "pin_reset_required":
             return {
+                "status": "pin_reset_required",
+                "accountNumber": data.get("accountNumber", account_number),
+            }
+
+        if status == "locked":
+            out = {
                 "status": "locked",
                 "remaining_lock_seconds": data.get("remaining_lock_seconds", 300),
                 "lock_minutes": data.get("lock_minutes"),
             }
+            if data.get("admin_unlock_required"):
+                out["admin_unlock_required"] = True
+            return out
 
         if status != "ok":
             return {
@@ -109,6 +144,31 @@ class MiddlewareClient:
         if result.get("status") != "ok":
             return None
         return result.get("account")
+
+    def reset_pin(self, account_number: str, new_pin: str, confirm_pin: str) -> dict:
+        """POST /atm/reset-pin — customer sets new PIN after admin unlock."""
+        try:
+            resp = requests.post(
+                f"{self.base_url}/atm/reset-pin",
+                json={
+                    "accountNumber": account_number,
+                    "newPin": new_pin,
+                    "confirmPin": confirm_pin,
+                },
+                headers={"X-Channel": "ATM_WEB"},
+                timeout=10,
+            )
+        except requests.exceptions.ConnectionError:
+            raise RuntimeError(
+                f"Cannot reach middleware at {self.base_url}.\n"
+                "Start it: cd atm-middleware && python3 middleware.py"
+            )
+        try:
+            return resp.json()
+        except ValueError:
+            raise RuntimeError(
+                f"Middleware returned non-JSON (HTTP {resp.status_code}): {resp.text[:200]}"
+            )
 
     # ── Balance ───────────────────────────────────────────────────────────────
 
@@ -244,11 +304,17 @@ class AccountsRepository:
     def __init__(self, middleware_url: str):
         self._client = MiddlewareClient(middleware_url)
 
+    def check_account_status(self, account_number: str) -> dict:
+        return self._client.check_account_status(account_number)
+
     def authenticate_with_status(self, account_number: str, pin: str) -> dict:
         return self._client.authenticate_with_status(account_number, pin)
 
     def authenticate(self, account_number: str, pin: str):
         return self._client.authenticate(account_number, pin)
+
+    def reset_pin(self, account_number: str, new_pin: str, confirm_pin: str) -> dict:
+        return self._client.reset_pin(account_number, new_pin, confirm_pin)
 
     def get_balance(self, account_id: str) -> float:
         return self._client.get_balance()

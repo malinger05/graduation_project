@@ -75,9 +75,17 @@ SERVICE_TOKEN         = config.SERVICE_TOKEN
 ACK_TIMEOUT_SECONDS   = config.ACK_TIMEOUT_SECONDS
 SESSION_TTL_SECONDS   = config.SESSION_TTL_SECONDS
 sessions.configure(SESSION_TTL_SECONDS)
-LOCKOUT_MAX_ATTEMPTS  = config.LOCKOUT_MAX_ATTEMPTS
-LOCKOUT_MINUTES       = [5, 10, 15]  # progressive lockout durations
-lockouts.configure(LOCKOUT_MAX_ATTEMPTS, LOCKOUT_MINUTES)
+# Always lock after 3 consecutive failures per block (policy is tiered minutes, not attempt count).
+LOCKOUT_BLOCK_ATTEMPTS = 3
+LOCKOUT_MINUTES        = config.LOCKOUT_MINUTES
+if config.LOCKOUT_MAX_ATTEMPTS != LOCKOUT_BLOCK_ATTEMPTS:
+    print(
+        f"[Lockouts] LOCKOUT_MAX_ATTEMPTS={config.LOCKOUT_MAX_ATTEMPTS} ignored; "
+        f"using block size {LOCKOUT_BLOCK_ATTEMPTS}"
+    )
+lockouts.configure(LOCKOUT_BLOCK_ATTEMPTS, LOCKOUT_MINUTES)
+if max(LOCKOUT_MINUTES) < 1:
+    print(f"[Lockouts] FAST TEST mode — tier minutes: {LOCKOUT_MINUTES}")
 
 CONTRACT_ADDRESS  = config.CONTRACT_ADDRESS
 ETH_PRIVATE_KEY   = config.ETH_PRIVATE_KEY
@@ -359,6 +367,13 @@ def _cb_post(path: str, body: dict, token: str | None = None, extra_headers: dic
     return resp
 
 
+def _cb_post_service(path: str, body: dict):
+    """Core Banking call authenticated with middleware service token."""
+    if not SERVICE_TOKEN:
+        raise HTTPException(503, "MIDDLEWARE_SERVICE_TOKEN not configured")
+    return _cb_post(path, body, extra_headers={"X-Service-Token": SERVICE_TOKEN})
+
+
 # ── Request models ────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
@@ -372,11 +387,56 @@ class AckRequest(BaseModel):
     middlewareTxId: int
 
 
+class AccountStatusRequest(BaseModel):
+    accountNumber: str
+
+
+class AdminUnlockRequest(BaseModel):
+    accountNumber: str
+
+
+class ResetPinRequest(BaseModel):
+    accountNumber: str
+    newPin: str
+    confirmPin: str
+
+
+def _require_service_token(x_service_token: str | None) -> None:
+    if not SERVICE_TOKEN or (x_service_token or "").strip() != SERVICE_TOKEN:
+        raise HTTPException(401, "Unauthorized")
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
     return {"status": "ok", "layer": 2, "service": "ATM Middleware"}
+
+
+@app.post("/atm/account-status")
+def atm_account_status(
+    req: AccountStatusRequest,
+    x_channel: str | None = Header(None, alias="X-Channel"),
+):
+    """Lockout / PIN-reset state for an account (no PIN — used after account number entry)."""
+    started = time.perf_counter()
+    channel = _resolve_channel(x_channel)
+    corr = correlation.new_correlation_id()
+    req_audit = {"accountNumber": req.accountNumber}
+
+    lockout = lockouts.check(req.accountNumber)
+    if lockout:
+        body = lockout if lockout.get("status") == "pin_reset_required" else {"status": "locked", **lockout}
+    else:
+        body = {"status": "ok", "accountNumber": req.accountNumber}
+
+    _audit(
+        endpoint="/atm/account-status", http_method="POST", outcome="success",
+        status_code=200, started=started, account_number=req.accountNumber,
+        channel=channel, request_body=req_audit, response_body=body,
+        correlation_id=corr,
+    )
+    return body
 
 
 @app.post("/atm/login")
@@ -395,11 +455,12 @@ def atm_login(
 
     lockout = lockouts.check(req.accountNumber)
     if lockout:
-        body = {"status": "locked", **lockout}
+        body = lockout if lockout.get("status") == "pin_reset_required" else {"status": "locked", **lockout}
+        step_msg = "pin reset required" if body.get("status") == "pin_reset_required" else "account locked"
         correlation.log_step(
             corr, "lockout_check", "middleware", "skipped",
             account_number=req.accountNumber, endpoint="/atm/login",
-            message="account locked",
+            message=step_msg,
         )
         _audit(
             endpoint="/atm/login", http_method="POST", outcome="success",
@@ -416,7 +477,11 @@ def atm_login(
     resp = _cb_post("/atm/login", {"accountNumber": req.accountNumber, "pin": req.pin})
 
     if resp.status_code == 401:
-        result = lockouts.record_failure(req.accountNumber)
+        try:
+            result = lockouts.record_failure(req.accountNumber)
+        except Exception as e:
+            print(f"[Lockouts] record_failure failed for {req.accountNumber}: {e}")
+            raise HTTPException(500, f"Lockout state error: {e}") from e
         correlation.log_step(
             corr, "core_banking_response", "core_banking", "error",
             account_number=req.accountNumber, endpoint="/atm/login",
@@ -489,6 +554,95 @@ def atm_login(
         endpoint="/atm/login", http_method="POST", outcome="success",
         status_code=200, started=started, account_number=req.accountNumber,
         channel=channel, request_body=req_audit, response_body=safe_body,
+        correlation_id=corr,
+    )
+    return body
+
+
+@app.post("/atm/admin/login-unlock")
+def atm_admin_login_unlock(
+    req: AdminUnlockRequest,
+    x_service_token: str | None = Header(None, alias="X-Service-Token"),
+):
+    """Staff unlock after identity check; customer must set a new PIN at the ATM."""
+    _require_service_token(x_service_token)
+    lockouts.admin_unlock(req.accountNumber)
+    return {
+        "status":        "ok",
+        "accountNumber": req.accountNumber,
+        "mustResetPin":  True,
+        "message":       "Account unlocked. Customer must set a new PIN at the ATM.",
+    }
+
+
+@app.post("/atm/reset-pin")
+def atm_reset_pin(
+    req: ResetPinRequest,
+    x_channel: str | None = Header(None, alias="X-Channel"),
+):
+    """Customer sets new PIN after admin unlock (no old PIN required)."""
+    started = time.perf_counter()
+    channel = _resolve_channel(x_channel)
+    corr = correlation.new_correlation_id()
+    req_audit = {
+        "accountNumber": req.accountNumber,
+        "newPin":        "***REDACTED***",
+        "confirmPin":    "***REDACTED***",
+    }
+
+    if req.newPin != req.confirmPin:
+        body = {"status": "error", "message": "PINs do not match."}
+        _audit(
+            endpoint="/atm/reset-pin", http_method="POST", outcome="error",
+            status_code=200, started=started, account_number=req.accountNumber,
+            channel=channel, request_body=req_audit, response_body=body,
+            correlation_id=corr,
+        )
+        return body
+
+    if len(req.newPin) < 4 or len(req.newPin) > 8 or not req.newPin.isdigit():
+        body = {"status": "error", "message": "PIN must be 4–8 digits."}
+        _audit(
+            endpoint="/atm/reset-pin", http_method="POST", outcome="error",
+            status_code=200, started=started, account_number=req.accountNumber,
+            channel=channel, request_body=req_audit, response_body=body,
+            correlation_id=corr,
+        )
+        return body
+
+    if not lockouts.requires_pin_reset(req.accountNumber):
+        raise HTTPException(
+            403,
+            "PIN reset is not required for this account. Contact the bank if you need help.",
+        )
+
+    resp = _cb_post_service(
+        "/atm/reset-pin",
+        {"accountNumber": req.accountNumber, "pin": req.newPin},
+    )
+    if not resp.ok:
+        try:
+            err_msg = resp.json().get("error", resp.text)
+        except Exception:
+            err_msg = resp.text or "Could not reset PIN."
+        body = {"status": "error", "message": err_msg}
+        _audit(
+            endpoint="/atm/reset-pin", http_method="POST", outcome="error",
+            status_code=200, started=started, account_number=req.accountNumber,
+            channel=channel, request_body=req_audit, response_body=body,
+            correlation_id=corr,
+        )
+        return body
+
+    lockouts.complete_pin_reset(req.accountNumber)
+    body = {
+        "status":  "ok",
+        "message": "PIN updated. Please log in with your new PIN.",
+    }
+    _audit(
+        endpoint="/atm/reset-pin", http_method="POST", outcome="success",
+        status_code=200, started=started, account_number=req.accountNumber,
+        channel=channel, request_body=req_audit, response_body=body,
         correlation_id=corr,
     )
     return body

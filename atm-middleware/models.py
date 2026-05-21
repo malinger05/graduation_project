@@ -13,7 +13,7 @@ Still planned: routing_config.
 
 from __future__ import annotations
 
-from sqlalchemy import Column, DateTime, Float, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 
 from db import Base
@@ -87,16 +87,22 @@ class LoginLockout(Base):
     """
     Failed login attempts and progressive lockout per account.
 
+    lock_tier counts completed timed lock cycles (5 → 10 → 15 → 30 min).
+    After all tiers are exhausted, permanently_locked requires admin unlock.
+
     Owned by the middleware (not Core Banking). Survives process restarts
     when the middleware DB is configured.
     """
 
     __tablename__ = "login_lockouts"
 
-    account_number  = Column(String, primary_key=True)
-    failed_attempts = Column(Integer, nullable=False, default=0)
-    locked_until    = Column(DateTime(timezone=True), nullable=True)
-    updated_at      = Column(DateTime(timezone=True), nullable=False)
+    account_number     = Column(String, primary_key=True)
+    failed_attempts    = Column(Integer, nullable=False, default=0)
+    lock_tier          = Column(Integer, nullable=False, default=0)
+    locked_until       = Column(DateTime(timezone=True), nullable=True)
+    permanently_locked = Column(Boolean, nullable=False, default=False)
+    must_reset_pin     = Column(Boolean, nullable=False, default=False)
+    updated_at         = Column(DateTime(timezone=True), nullable=False)
 
 
 class TransactionLog(Base):

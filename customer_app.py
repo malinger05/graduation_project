@@ -218,6 +218,46 @@ def dashboard():
     return redirect(url_for("atm_home"))
 
 
+@app.route("/check-account", methods=["POST"])
+def check_account():
+    account = (request.form.get("account") or "").strip()
+    if not account:
+        return jsonify({"status": "error", "message": "Enter account number."}), 400
+
+    try:
+        repo = AccountsRepository(MIDDLEWARE_URL)
+        result = repo.check_account_status(account)
+    except RuntimeError as e:
+        return jsonify({"status": "error", "message": str(e)}), 503
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 503
+
+    status = result.get("status", "ok")
+    if status == "pin_reset_required":
+        return jsonify({
+            "status": "pin_reset_required",
+            "account": account,
+            "message": "Your account was unlocked by the bank. You must set a new PIN before logging in.",
+        })
+    if status == "locked":
+        if result.get("admin_unlock_required"):
+            return jsonify({
+                "status": "locked",
+                "admin_unlock_required": True,
+                "remaining_lock_seconds": 0,
+                "message": "Account locked. Contact an administrator to unlock.",
+            }), 403
+        remaining = int(result.get("remaining_lock_seconds", 300))
+        mins, secs = divmod(remaining, 60)
+        return jsonify({
+            "status": "locked",
+            "remaining_lock_seconds": remaining,
+            "message": f"Account locked. Try again in {mins:02d}:{secs:02d}.",
+        }), 403
+
+    return jsonify({"status": "ok", "account": account})
+
+
 @app.route("/login", methods=["POST"])
 def login():
     account = (request.form.get("account") or "").strip()
@@ -236,11 +276,26 @@ def login():
 
     auth_status = auth_result.get("status")
 
+    if auth_status == "pin_reset_required":
+        return jsonify({
+            "status": "pin_reset_required",
+            "account": account,
+            "message": "Your account was unlocked by the bank. Please set a new PIN.",
+        }), 403
+
     if auth_status == "locked":
+        if auth_result.get("admin_unlock_required"):
+            return jsonify({
+                "status": "locked",
+                "admin_unlock_required": True,
+                "remaining_lock_seconds": 0,
+                "message": "Account locked. Contact an administrator to unlock.",
+            }), 403
         remaining = int(auth_result.get("remaining_lock_seconds", 300))
         mins, secs = divmod(remaining, 60)
         return jsonify({
             "status": "locked",
+            "remaining_lock_seconds": remaining,
             "message": f"Account locked. Try again in {mins:02d}:{secs:02d}.",
         }), 403
 
@@ -268,6 +323,35 @@ def login():
         "full_name": user.get("name", "Customer"),
         "balance": float(user.get("balance", 0)),
         "account": account,
+    })
+
+
+@app.route("/reset-pin", methods=["POST"])
+def reset_pin():
+    account = (request.form.get("account") or "").strip()
+    new_pin = (request.form.get("newPin") or "").strip()
+    confirm_pin = (request.form.get("confirmPin") or "").strip()
+
+    if not account or not new_pin or not confirm_pin:
+        return jsonify({"status": "error", "message": "Enter account number and PIN twice."}), 400
+
+    try:
+        repo = AccountsRepository(MIDDLEWARE_URL)
+        result = repo.reset_pin(account, new_pin, confirm_pin)
+    except RuntimeError as e:
+        return jsonify({"status": "error", "message": str(e)}), 503
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 503
+
+    if result.get("status") != "ok":
+        return jsonify({
+            "status": "error",
+            "message": result.get("message", "Could not reset PIN."),
+        }), 400
+
+    return jsonify({
+        "status": "ok",
+        "message": result.get("message", "PIN updated. Please log in with your new PIN."),
     })
 
 

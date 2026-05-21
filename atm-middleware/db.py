@@ -66,8 +66,34 @@ def init_db() -> bool:
     import models  # noqa: F401
 
     Base.metadata.create_all(bind=_engine)
+    _migrate_login_lockouts(_engine)
     _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
     return True
+
+
+def _migrate_login_lockouts(engine: Engine) -> None:
+    """Add lock_tier / permanently_locked on existing deployments."""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE login_lockouts "
+                "ADD COLUMN IF NOT EXISTS lock_tier INTEGER NOT NULL DEFAULT 0"
+            )
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE login_lockouts "
+                "ADD COLUMN IF NOT EXISTS permanently_locked BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE login_lockouts "
+                "ADD COLUMN IF NOT EXISTS must_reset_pin BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        )
 
 
 @contextmanager

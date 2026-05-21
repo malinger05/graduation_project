@@ -336,6 +336,25 @@ html,body{
 }
 .countdown-label{font-size:12px;color:rgba(255,255,255,0.3);margin-top:4px;letter-spacing:0.06em;text-transform:uppercase;}
 .locked-hint{font-size:14px;color:rgba(255,255,255,0.25);margin-top:16px;}
+
+/* ── PIN reset required (after account number) ── */
+#page-pin-reset-required{background:var(--navy);justify-content:center;align-items:center;}
+.pin-reset-notice-inner{text-align:center;padding:40px 32px;max-width:520px;margin:0 auto;}
+.pin-reset-notice-icon{
+  width:90px;height:90px;border-radius:50%;
+  background:rgba(200,152,26,0.15);border:2px solid rgba(200,152,26,0.45);
+  display:flex;align-items:center;justify-content:center;margin:0 auto 24px;
+}
+.pin-reset-notice-icon svg{width:42px;height:42px;stroke:var(--yellow);stroke-width:2;fill:none;stroke-linecap:round;}
+.pin-reset-notice-title{font-size:32px;font-weight:800;color:var(--white);margin-bottom:10px;letter-spacing:-0.02em;}
+.pin-reset-notice-sub{font-size:17px;color:rgba(255,255,255,0.5);margin-bottom:20px;line-height:1.65;}
+.pin-reset-notice-account{
+  font-size:14px;font-family:var(--mono);color:rgba(255,255,255,0.35);
+  margin-bottom:32px;letter-spacing:0.04em;
+}
+.pin-reset-notice-actions{display:flex;flex-direction:column;gap:12px;max-width:280px;margin:0 auto;}
+.pin-reset-notice-hint{font-size:13px;color:rgba(255,255,255,0.28);margin-top:20px;line-height:1.5;}
+
 #page-error{background:var(--offwhite);justify-content:center;align-items:center;}
 .error-inner{text-align:center;padding:28px;max-width:360px;}
 .error-icon{font-size:40px;margin-bottom:14px;}
@@ -602,6 +621,50 @@ html,body{
     </div>
   </div>
 
+  <!-- PIN RESET REQUIRED (shown right after account number) -->
+  <div class="page" id="page-pin-reset-required">
+    <div class="pin-reset-notice-inner">
+      <div class="pin-reset-notice-icon">
+        <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/><circle cx="12" cy="16" r="1"/></svg>
+      </div>
+      <div class="pin-reset-notice-title">PIN reset required</div>
+      <div class="pin-reset-notice-sub">
+        Your identity was confirmed at the branch.<br>
+        You must choose a <strong style="color:rgba(255,255,255,0.85);">new PIN</strong> before you can use this account at the ATM.<br>
+        Your previous PIN will not work.
+      </div>
+      <div class="pin-reset-notice-account" id="pin-reset-notice-account">Account —</div>
+      <div class="pin-reset-notice-actions">
+        <button class="btn btn-yellow btn-full" onclick="continuePinResetFromNotice()">Set new PIN now →</button>
+        <button class="btn btn-ghost btn-full" onclick="goTo('idle')">Cancel</button>
+      </div>
+      <div class="pin-reset-notice-hint">Do not enter your old PIN. Continue to create a new one.</div>
+    </div>
+  </div>
+
+  <!-- PIN RESET (after admin unlock) -->
+  <div class="page" id="page-pin-reset">
+    <div class="login-split">
+      <div class="login-left">
+        <div>
+          <div class="login-left-title">Set New PIN</div>
+          <div class="login-left-sub" style="margin-top:4px;">Your identity was confirmed at the branch.<br>Choose a new PIN to reactivate ATM access.</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="goTo('idle')">Cancel</button>
+      </div>
+      <div class="login-right">
+        <div class="login-heading" id="pin-reset-heading">Enter account number</div>
+        <div class="login-sub-text" id="pin-reset-sub">The account the bank unlocked for you</div>
+        <div class="error-box" id="pin-reset-error"></div>
+        <div class="field">
+          <label id="pin-reset-label">Account Number</label>
+          <input type="text" id="pin-reset-input" placeholder="e.g. ACC53C01C3F9CFF" autocomplete="off">
+        </div>
+        <button class="btn btn-yellow btn-full" onclick="pinResetNext()">Continue →</button>
+      </div>
+    </div>
+  </div>
+
   <!-- LOCKED -->
   <div class="page" id="page-locked">
     <div class="locked-inner">
@@ -757,15 +820,17 @@ function loginNext(){
   if(S.loginStep===1){
     if(!val){err.textContent='Enter your account number.';err.classList.add('show');return;}
     S.loginAccount=val;
-    S.loginStep=2;
-    document.getElementById('login-heading').textContent='Enter your PIN';
-    document.getElementById('login-sub').textContent='Your 4–8 digit ATM PIN';
-    document.getElementById('login-field-label').textContent='PIN';
-    document.getElementById('login-input').type='password';
-    document.getElementById('login-input').placeholder='••••';
-    document.getElementById('login-input').value='';
-    document.getElementById('step1').className='lstep done';
-    document.getElementById('step2').className='lstep active';
+    checkAccountAfterEntry(val,err,function(){
+      S.loginStep=2;
+      document.getElementById('login-heading').textContent='Enter your PIN';
+      document.getElementById('login-sub').textContent='Your 4–8 digit ATM PIN';
+      document.getElementById('login-field-label').textContent='PIN';
+      document.getElementById('login-input').type='password';
+      document.getElementById('login-input').placeholder='••••';
+      document.getElementById('login-input').value='';
+      document.getElementById('step1').className='lstep done';
+      document.getElementById('step2').className='lstep active';
+    });
     return;
   }
 
@@ -790,11 +855,20 @@ function loginNext(){
           else if(S.flow==='withdraw'||S.flow==='deposit'){enterMenu();setTimeout(()=>doOp(S.flow),300);}
           else{enterMenu();}
         },500);
+      } else if(d.status==='pin_reset_required'){
+        showPinResetRequired(d.account||S.loginAccount);
       } else if(d.status==='locked'){
-        var msg=d.message||'';
-        var match=msg.match(/(\d+):(\d+)/);
-        var secs=match?(parseInt(match[1])*60+parseInt(match[2])):300;
-        showLocked(secs);
+        if(d.admin_unlock_required){
+          showLockedAdmin();
+        } else {
+          var secs=parseInt(d.remaining_lock_seconds,10);
+          if(!secs||isNaN(secs)){
+            var msg=d.message||'';
+            var match=msg.match(/(\d+):(\d+)/);
+            secs=match?(parseInt(match[1])*60+parseInt(match[2])):300;
+          }
+          showLocked(secs);
+        }
       } else {
         document.getElementById('step2').className='lstep active';
         document.getElementById('step3').className='lstep';
@@ -840,9 +914,157 @@ function doLogout(){
   });
 }
 
+// ── Account status (after account number, before PIN) ──
+function checkAccountAfterEntry(account,errEl,onProceed){
+  fetch('/check-account',{
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'account='+encodeURIComponent(account)
+  })
+  .then(r=>r.json().then(d=>({ok:r.ok,d})))
+  .then(({ok,d})=>{
+    if(d.status==='pin_reset_required'){
+      showPinResetRequired(d.account||account);
+      return;
+    }
+    if(d.status==='locked'){
+      if(d.admin_unlock_required){showLockedAdmin();}
+      else{
+        var secs=parseInt(d.remaining_lock_seconds,10);
+        if(!secs||isNaN(secs)){
+          var msg=d.message||'';
+          var match=msg.match(/(\d+):(\d+)/);
+          secs=match?(parseInt(match[1])*60+parseInt(match[2])):300;
+        }
+        showLocked(secs);
+      }
+      return;
+    }
+    if(d.status==='error'){
+      errEl.textContent=d.message||'Cannot verify account.';
+      errEl.classList.add('show');
+      return;
+    }
+    onProceed();
+  })
+  .catch(function(){
+    errEl.textContent='Cannot reach server. Try again.';
+    errEl.classList.add('show');
+  });
+}
+
+function showPinResetRequired(account){
+  S.pendingResetAccount=account;
+  document.getElementById('pin-reset-notice-account').textContent='Account '+account;
+  goTo('pin-reset-required');
+}
+
+function continuePinResetFromNotice(){
+  showPinResetPage(S.pendingResetAccount||'');
+}
+
+// ── PIN reset (only after admin unlock — triggered by account-status check) ──
+function showPinResetPage(account){
+  S.pinResetAccount=account||'';
+  S.pinResetStep=2;
+  S.pinResetNew='';
+  document.getElementById('pin-reset-heading').textContent='Choose new PIN';
+  document.getElementById('pin-reset-sub').textContent='4–8 digits';
+  document.getElementById('pin-reset-label').textContent='New PIN';
+  document.getElementById('pin-reset-input').type='password';
+  document.getElementById('pin-reset-input').value='';
+  document.getElementById('pin-reset-input').placeholder='••••';
+  document.getElementById('pin-reset-error').classList.remove('show');
+  goTo('pin-reset');
+}
+
+function pinResetNext(){
+  var val=document.getElementById('pin-reset-input').value.trim();
+  var err=document.getElementById('pin-reset-error');
+  err.classList.remove('show');
+
+  if(S.pinResetStep===1){
+    if(!val){err.textContent='Enter your account number.';err.classList.add('show');return;}
+    checkAccountAfterEntry(val,err,function(){
+      err.textContent='PIN reset is not required for this account. Contact the bank if you need help.';
+      err.classList.add('show');
+    });
+    return;
+  }
+
+  if(S.pinResetStep===2){
+    if(!val||val.length<4){err.textContent='PIN must be at least 4 digits.';err.classList.add('show');return;}
+    S.pinResetNew=val;
+    S.pinResetStep=3;
+    document.getElementById('pin-reset-heading').textContent='Confirm new PIN';
+    document.getElementById('pin-reset-sub').textContent='Enter the same PIN again';
+    document.getElementById('pin-reset-label').textContent='Confirm PIN';
+    document.getElementById('pin-reset-input').value='';
+    return;
+  }
+
+  if(S.pinResetStep===3){
+    if(val!==S.pinResetNew){err.textContent='PINs do not match.';err.classList.add('show');return;}
+    fetch('/reset-pin',{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'account='+encodeURIComponent(S.pinResetAccount)+
+           '&newPin='+encodeURIComponent(S.pinResetNew)+
+           '&confirmPin='+encodeURIComponent(val)
+    })
+    .then(r=>r.json().then(d=>({ok:r.ok,d})))
+    .then(({ok,d})=>{
+      if(d.status==='ok'){
+        alert(d.message||'PIN updated. Please log in with your new PIN.');
+        S.pinResetStep=1;
+        resetLogin();
+        goTo('idle');
+      } else {
+        var msg=d.message||'Could not reset PIN.';
+        var samePin=/cannot be the same|different from your previous/i.test(msg);
+        if(samePin){
+          alert('The PIN cannot be the same as the old one.');
+        }
+        err.textContent=samePin?'The PIN cannot be the same as the old one.':msg;
+        err.classList.add('show');
+        S.pinResetStep=2;
+        document.getElementById('pin-reset-heading').textContent='Choose new PIN';
+        document.getElementById('pin-reset-label').textContent='New PIN';
+        document.getElementById('pin-reset-input').value='';
+        S.pinResetNew='';
+      }
+    })
+    .catch(()=>{err.textContent='Cannot reach server.';err.classList.add('show');});
+  }
+}
+
 // ── Locked countdown ──
 var lockTimer=null;
+function showLockedAdmin(){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-locked').classList.add('active');
+  document.getElementById('header-nav').classList.remove('visible');
+  document.querySelector('#page-locked .locked-title').textContent='Account Locked';
+  document.querySelector('#page-locked .locked-sub').innerHTML=
+    'Too many incorrect PIN attempts.<br>Please contact a bank administrator to unlock your account.';
+  document.getElementById('lock-countdown').textContent='—';
+  document.getElementById('lock-ring').style.strokeDashoffset='427';
+  document.querySelector('#page-locked .locked-hint').textContent=
+    'This account cannot be unlocked from the ATM. An administrator must clear the lock.';
+  if(lockTimer)clearInterval(lockTimer);
+  lockTimer=null;
+  setTimeout(function(){
+    S.account='';S.name='Customer';S.balance=0;S.flow='';
+    resetLogin();
+    goTo('idle');
+  },15000);
+}
 function showLocked(totalSeconds){
+  document.querySelector('#page-locked .locked-title').textContent='Account Locked';
+  document.querySelector('#page-locked .locked-sub').innerHTML=
+    'Too many incorrect PIN attempts.<br>Please wait before trying again.';
+  document.querySelector('#page-locked .locked-hint').textContent=
+    'This screen cannot be dismissed. Please wait for the timer.';
   // Show the locked page
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-locked').classList.add('active');
