@@ -51,15 +51,15 @@ LOCKOUT_MAX_ATTEMPTS = _int("LOCKOUT_MAX_ATTEMPTS", 3)
 
 def _lockout_minutes_list() -> list[float]:
     """
-    Comma-separated minutes per tier, e.g. LOCKOUT_MINUTES=5,15,30
-    LOCKOUT_FAST_TEST=1 → 0.05,0.1,0.15 (3s / 6s / 9s) for manual testing.
+    Comma-separated minutes per tier, e.g. LOCKOUT_MINUTES=15,30
+    LOCKOUT_FAST_TEST=1 → 0.1,0.15 (~6s / ~9s) for manual testing.
     """
     if _str("LOCKOUT_FAST_TEST", "").lower() in ("1", "true", "yes", "on"):
-        return [0.05, 0.1, 0.15]
+        return [0.1, 0.15]
     raw = _str("LOCKOUT_MINUTES", "")
     if raw:
         return [float(x.strip()) for x in raw.split(",") if x.strip()]
-    return [5.0, 15.0, 30.0]
+    return [15.0, 30.0]
 
 
 LOCKOUT_MINUTES = _lockout_minutes_list()

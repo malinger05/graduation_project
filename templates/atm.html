@@ -314,8 +314,12 @@ html,body{
 .txn-footer{padding:9px 12px;border-top:1px solid #EAE7E0;display:flex;gap:8px;flex-shrink:0;}
 
 /* ── LOCKED ── */
-#page-locked{background:var(--navy);justify-content:center;align-items:center;cursor:not-allowed;}
-#page-locked *{pointer-events:none;}
+#page-locked{background:var(--navy);justify-content:center;align-items:center;}
+#page-locked:not(.locked-admin){cursor:not-allowed;}
+#page-locked:not(.locked-admin) .locked-inner *{pointer-events:none;}
+#page-locked.locked-admin .countdown-ring{display:none;}
+.locked-back-wrap{margin-top:28px;pointer-events:auto;}
+.locked-back-wrap .btn{cursor:pointer;}
 .locked-inner{text-align:center;padding:40px;max-width:500px;margin:0 auto;}
 .locked-icon{
   width:90px;height:90px;border-radius:50%;
@@ -681,7 +685,10 @@ html,body{
         </svg>
         <div class="countdown-time" id="lock-countdown">--:--</div>
       </div>
-      <div class="locked-hint">This screen cannot be dismissed. Please wait for the timer.</div>
+      <div class="locked-hint" id="locked-hint">This screen cannot be dismissed. Please wait for the timer.</div>
+      <div class="locked-back-wrap" id="locked-back-wrap" style="display:none;">
+        <button type="button" class="btn btn-yellow" onclick="leaveLockedScreen()">Back to the main page</button>
+      </div>
     </div>
   </div>
 
@@ -1040,34 +1047,43 @@ function pinResetNext(){
 
 // ── Locked countdown ──
 var lockTimer=null;
+function leaveLockedScreen(){
+  if(lockTimer){clearInterval(lockTimer);lockTimer=null;}
+  S.account='';S.name='Customer';S.balance=0;S.flow='';
+  S.loginAccount='';
+  resetLogin();
+  var lockedPage=document.getElementById('page-locked');
+  lockedPage.classList.remove('locked-admin');
+  document.getElementById('locked-back-wrap').style.display='none';
+  document.querySelector('#page-locked .countdown-ring').style.display='';
+  goTo('idle');
+}
 function showLockedAdmin(){
+  if(lockTimer){clearInterval(lockTimer);lockTimer=null;}
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  document.getElementById('page-locked').classList.add('active');
+  var lockedPage=document.getElementById('page-locked');
+  lockedPage.classList.add('active','locked-admin');
   document.getElementById('header-nav').classList.remove('visible');
   document.querySelector('#page-locked .locked-title').textContent='Account Locked';
   document.querySelector('#page-locked .locked-sub').innerHTML=
     'Too many incorrect PIN attempts.<br>Please contact a bank administrator to unlock your account.';
-  document.getElementById('lock-countdown').textContent='—';
-  document.getElementById('lock-ring').style.strokeDashoffset='427';
-  document.querySelector('#page-locked .locked-hint').textContent=
+  document.getElementById('locked-hint').textContent=
     'This account cannot be unlocked from the ATM. An administrator must clear the lock.';
-  if(lockTimer)clearInterval(lockTimer);
-  lockTimer=null;
-  setTimeout(function(){
-    S.account='';S.name='Customer';S.balance=0;S.flow='';
-    resetLogin();
-    goTo('idle');
-  },15000);
+  document.getElementById('locked-back-wrap').style.display='block';
 }
 function showLocked(totalSeconds){
+  if(lockTimer){clearInterval(lockTimer);lockTimer=null;}
+  var lockedPage=document.getElementById('page-locked');
+  lockedPage.classList.remove('locked-admin');
+  document.getElementById('locked-back-wrap').style.display='none';
+  document.querySelector('#page-locked .countdown-ring').style.display='';
   document.querySelector('#page-locked .locked-title').textContent='Account Locked';
   document.querySelector('#page-locked .locked-sub').innerHTML=
     'Too many incorrect PIN attempts.<br>Please wait before trying again.';
-  document.querySelector('#page-locked .locked-hint').textContent=
+  document.getElementById('locked-hint').textContent=
     'This screen cannot be dismissed. Please wait for the timer.';
-  // Show the locked page
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  document.getElementById('page-locked').classList.add('active');
+  lockedPage.classList.add('active');
   document.getElementById('header-nav').classList.remove('visible');
 
   var remaining=totalSeconds;

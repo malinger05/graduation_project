@@ -3,8 +3,8 @@ lockouts.py  —  Login failure / account lockout state for the middleware.
 
 Progressive lockout policy:
   - Lock out after every 3 consecutive invalid authentication attempts.
-  - Lockout duration increases by tier: 5 → 15 → 30 minutes.
-  - If user fails 3 more times after 30-minute lock, account is admin-unlock-only.
+  - Timed tiers: 15 minutes, then 30 minutes (9 failures total before permanent).
+  - After the 30-minute tier, 3 more failures → admin-unlock-only (permanent).
 
 When MIDDLEWARE_DB_URL is set, state lives in login_lockouts and survives
 middleware restarts. When unset, falls back to an in-memory dict.
@@ -20,7 +20,7 @@ import db
 from models import LoginLockout
 
 _max_attempts: int = 3
-_lockout_minutes: list[int] = [5, 15, 30]
+_lockout_minutes: list[int] = [15, 30]
 
 _memory: dict[str, dict] = {}
 _memory_lock = threading.Lock()
@@ -29,7 +29,7 @@ _memory_lock = threading.Lock()
 def configure(max_attempts: int, lockout_minutes: list[int]) -> None:
     global _max_attempts, _lockout_minutes
     _max_attempts = max(1, max_attempts)
-    _lockout_minutes = lockout_minutes or [5, 15, 30]
+    _lockout_minutes = lockout_minutes or [15, 30]
 
 
 def _now() -> datetime:

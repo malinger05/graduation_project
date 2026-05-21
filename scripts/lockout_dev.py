@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Instant lockout states for manual testing (no waiting for 5/15/30 min timers).
+Instant lockout states for manual testing (no waiting for 15/30 min timers).
 
 Requires MIDDLEWARE_DB_URL (same keychain / .env as middleware).
 Does not work when middleware uses in-memory lockouts only.
@@ -68,7 +68,7 @@ def cmd_show(account: str) -> None:
 def cmd_permanent(account: str) -> None:
     with db.db_session() as s:
         row = _get_or_create(s, account)
-        row.failed_attempts = 12
+        row.failed_attempts = 9
         row.lock_tier = 99
         row.locked_until = None
         row.permanently_locked = True
