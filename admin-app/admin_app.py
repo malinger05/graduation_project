@@ -239,16 +239,24 @@ def register_customer():
 
     # Step 3: Set PIN
     pin = f.get("pin", "").strip()
-    if pin and len(pin) >= 4:
-        resp3 = _cb("post", "/atm/set-pin",
-            json={"accountId": str(account['accountId']), "pin": pin})
-        if not resp3 or not resp3.ok:
-            flash(f"PIN set failed — customer #{customer_id} and account created but PIN not set.")
-            return redirect(url_for("customers"))
+
+    if not pin or len(pin) != 4 or not pin.isdigit():
+        flash("PIN must be exactly 4 digits.")
+        return render_template("register.html", form=f)
+
+    resp3 = _cb("post", "/atm/set-pin",
+        json={"accountId": str(account['accountId']), "pin": pin})
+    if not resp3 or not resp3.ok:
+        try:
+            detail = resp3.json().get("message", resp3.text)
+        except Exception:
+            detail = "error"
+        flash(f"PIN set failed: {detail} — customer #{customer_id} and account created but PIN not set.")
+        return redirect(url_for("customers"))
 
     flash(f"✓ Customer {customer['firstName']} {customer['lastName']} registered. "
-          f"Account: {account['accountNumber']}. "
-          f"Customer ID: {customer_id}.")
+        f"Account: {account['accountNumber']}. "
+        f"Customer ID: {customer_id}.")
     return redirect(url_for("customers"))
 
 
