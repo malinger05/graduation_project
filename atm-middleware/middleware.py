@@ -335,15 +335,48 @@ def _session_cleanup() -> None:
 
 
 def _retention_cleanup() -> None:
-    """Purge old transaction_logs and expired idempotency rows on a schedule."""
-    interval = config.RETENTION_CLEANUP_INTERVAL_SECONDS
-    days     = config.TRANSACTION_LOG_RETENTION_DAYS
+    """Purge old logs, expired idempotency rows, and permanently-locked accounts on a schedule."""
+    interval        = config.RETENTION_CLEANUP_INTERVAL_SECONDS
+    days            = config.TRANSACTION_LOG_RETENTION_DAYS
+    locked_days     = int(os.environ.get("PERMANENTLY_LOCKED_ACCOUNT_CLEANUP_DAYS", "60"))
+
+    # Obtain an admin JWT once at startup for the Core Banking DELETE calls.
+    # If credentials are missing this is a no-op — locked accounts won't be
+    # auto-closed but all other retention tasks still run.
+    _admin_jwt_cache: list[str] = []
+
+    def _get_admin_jwt() -> str | None:
+        if _admin_jwt_cache:
+            return _admin_jwt_cache[0]
+        admin_user = os.environ.get("ADMIN_PANEL_USERNAME", "admin")
+        admin_pass = os.environ.get("ADMIN_PANEL_PASSWORD", "admin123")
+        try:
+            resp = requests.post(
+                f"{CORE_BANKING_URL}/auth/login",
+                json={"username": admin_user, "password": admin_pass},
+                timeout=(3, 10),
+            )
+            if resp.ok:
+                jwt = resp.json().get("token")
+                if jwt:
+                    _admin_jwt_cache.append(jwt)
+                    return jwt
+        except Exception:
+            pass
+        return None
+
     while True:
         time.sleep(interval)
         if not db.is_enabled():
             continue
         try:
-            counts = retention.run_retention(days)
+            jwt = _get_admin_jwt()
+            counts = retention.run_retention(
+                transaction_log_retention_days=days,
+                core_banking_url=CORE_BANKING_URL,
+                admin_jwt=jwt,
+                permanently_locked_cleanup_days=locked_days,
+            )
             removed = {k: v for k, v in counts.items() if v > 0}
             if removed:
                 print(f"[Retention] Purged rows: {removed}")

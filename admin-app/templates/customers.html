@@ -14,6 +14,7 @@
   </a>
 </div>
 
+<!-- ── All customers table ── -->
 <div class="card">
   {% if customers %}
   <div class="table-wrap">
@@ -63,45 +64,54 @@
   {% endif %}
 </div>
 
+<!-- ── Blocked Accounts section ── -->
+<div style="margin-top:32px;">
+  <div class="page-header" style="margin-bottom:16px;">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div style="width:8px;height:8px;border-radius:50%;background:#c8981a;animation:pd 1.8s ease-in-out infinite;"></div>
+      <div>
+        <h2 style="font-size:18px;font-weight:300;color:var(--text);">Blocked Accounts</h2>
+        <p class="page-sub" id="blocked-sub">Checking lockout status…</p>
+      </div>
+    </div>
+    <button id="refresh-blocked-btn" class="btn btn-ghost btn-sm" onclick="loadBlockedAccounts()">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+      Refresh
+    </button>
+  </div>
+
+  <div id="blocked-accounts-wrap">
+    <!-- skeleton -->
+    <div class="card" id="blocked-loading-card">
+      <div style="display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="animation:spin 1s linear infinite;"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>
+        Loading blocked accounts…
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ── Customer detail modal ── -->
 <div id="customer-modal" class="cm-overlay hidden">
   <div class="cm-card">
-
     <div class="cm-header">
       <div class="cm-avatar" id="cm-avatar">JD</div>
       <div style="flex:1;">
         <h2 class="cm-name" id="cm-name">—</h2>
-        <p class="cm-id"   id="cm-id">Customer #—</p>
+        <p class="cm-id" id="cm-id">Customer #—</p>
       </div>
       <button class="cm-close" id="cm-close" aria-label="Close">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>
     </div>
-
     <div class="cm-section-label">Personal information</div>
     <div class="cm-grid">
-      <div class="cm-field">
-        <p class="cm-field-label">Email</p>
-        <p class="cm-field-value mono" id="cm-email">—</p>
-      </div>
-      <div class="cm-field">
-        <p class="cm-field-label">Phone</p>
-        <p class="cm-field-value mono" id="cm-phone">—</p>
-      </div>
-      <div class="cm-field">
-        <p class="cm-field-label">National ID</p>
-        <p class="cm-field-value mono" id="cm-nationalid">—</p>
-      </div>
-      <div class="cm-field">
-        <p class="cm-field-label">Date of birth</p>
-        <p class="cm-field-value mono" id="cm-dob">—</p>
-      </div>
-      <div class="cm-field">
-        <p class="cm-field-label">Registered on</p>
-        <p class="cm-field-value mono" id="cm-created">—</p>
-      </div>
+      <div class="cm-field"><p class="cm-field-label">Email</p><p class="cm-field-value mono" id="cm-email">—</p></div>
+      <div class="cm-field"><p class="cm-field-label">Phone</p><p class="cm-field-value mono" id="cm-phone">—</p></div>
+      <div class="cm-field"><p class="cm-field-label">National ID</p><p class="cm-field-value mono" id="cm-nationalid">—</p></div>
+      <div class="cm-field"><p class="cm-field-label">Date of birth</p><p class="cm-field-value mono" id="cm-dob">—</p></div>
+      <div class="cm-field"><p class="cm-field-label">Registered on</p><p class="cm-field-value mono" id="cm-created">—</p></div>
     </div>
-
     <div class="cm-section-label" style="margin-top:22px;">
       Accounts
       <span class="cm-loading" id="cm-loading">
@@ -110,37 +120,108 @@
       </span>
     </div>
     <div id="cm-accounts"></div>
+  </div>
+</div>
+
+<!-- ── Admin Unlock Modal ── -->
+<div id="unlock-modal" class="cm-overlay hidden">
+  <div class="cm-card" style="max-width:500px;">
+
+    <div class="cm-header">
+      <div class="cm-avatar" id="unlock-avatar" style="background:rgba(200,152,26,0.14);border-color:rgba(200,152,26,0.3);color:#c8981a;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 019.9-1"/></svg>
+      </div>
+      <div style="flex:1;">
+        <h2 class="cm-name" id="unlock-customer-name">Admin Account Unlock</h2>
+        <p class="cm-id" id="unlock-account-label">Account —</p>
+      </div>
+      <button class="cm-close" id="unlock-close">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <!-- Step 1: Identity verification -->
+    <div id="unlock-step-1">
+      <div style="background:rgba(200,152,26,0.07);border:1px solid rgba(200,152,26,0.18);border-radius:10px;padding:14px 16px;margin-bottom:20px;display:flex;gap:12px;align-items:flex-start;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8981a" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;margin-top:1px;"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <p style="font-size:12px;color:#c8981a;line-height:1.6;">Verify the customer is physically present and their identity matches the registered data below before granting access.</p>
+      </div>
+
+      <div class="cm-section-label">Registered customer data — verify in person</div>
+      <div class="cm-grid" id="unlock-verify-data" style="margin-bottom:20px;"></div>
+
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+          <input type="checkbox" id="unlock-check-identity" style="margin-top:2px;accent-color:#c8981a;">
+          <span style="font-size:13px;color:var(--text);line-height:1.5;">I have verified the customer's identity matches the registered data above</span>
+        </label>
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+          <input type="checkbox" id="unlock-check-presence" style="margin-top:2px;accent-color:#c8981a;">
+          <span style="font-size:13px;color:var(--text);line-height:1.5;">The customer is physically present at the branch</span>
+        </label>
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+          <input type="checkbox" id="unlock-check-grant" style="margin-top:2px;accent-color:#c8981a;">
+          <span style="font-size:13px;color:var(--text);line-height:1.5;">I am granting this customer the ability to reset their PIN at the ATM</span>
+        </label>
+      </div>
+
+      <div id="unlock-error" style="display:none;background:rgba(232,25,60,0.08);border:1px solid rgba(232,25,60,0.2);border-radius:8px;padding:10px 14px;font-size:12px;color:#e07070;margin-bottom:14px;"></div>
+
+      <div style="display:flex;gap:10px;">
+        <button class="btn btn-ghost" id="unlock-cancel-btn" style="flex:1;justify-content:center;">Cancel</button>
+        <button class="btn" id="unlock-confirm-btn" style="flex:2;justify-content:center;background:#c8981a;color:#fff;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 019.9-1"/></svg>
+          Unlock &amp; allow PIN reset
+        </button>
+      </div>
+    </div>
+
+    <!-- Step 2: Success -->
+    <div id="unlock-step-2" style="display:none;text-align:center;padding:20px 0;">
+      <div style="width:56px;height:56px;border-radius:50%;background:rgba(61,184,138,0.12);border:2px solid rgba(61,184,138,0.3);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;animation:popIn 0.3s ease;">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#3db88a" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+      </div>
+      <p style="font-size:17px;font-weight:500;color:var(--text);margin-bottom:8px;">Account unlocked</p>
+      <p style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:20px;">The customer can now go to any ATM and will be prompted to set a new PIN.</p>
+      <div style="background:rgba(61,184,138,0.06);border:1px solid rgba(61,184,138,0.15);border-radius:10px;padding:12px 16px;text-align:left;margin-bottom:20px;">
+        <p style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#3db88a;margin-bottom:6px;">What happens next</p>
+        <p style="font-size:12px;color:var(--muted);line-height:1.6;">1. Customer goes to the ATM<br>2. Enters account number — PIN reset is detected<br>3. Sets a new 4–8 digit PIN<br>4. Confirms by entering it a second time<br>5. Continues to their transaction normally</p>
+      </div>
+      <button class="btn btn-ghost" id="unlock-done-btn" style="width:100%;justify-content:center;">Close</button>
+    </div>
 
   </div>
 </div>
 
 <style>
+/* ── Animations ── */
+@keyframes spin   { to { transform: rotate(360deg); } }
+@keyframes slideUp{ from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+@keyframes popIn  { from{transform:scale(0.6);opacity:0} to{transform:scale(1);opacity:1} }
+@keyframes pd     { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+/* ── Customer rows ── */
 .customer-row { cursor: pointer; }
 .customer-row:hover td { background: rgba(255,255,255,0.03); }
 
-/* overlay */
+/* ── Overlay ── */
 .cm-overlay {
   position: fixed; inset: 0;
-  background: rgba(4,8,16,0.82);
-  backdrop-filter: blur(6px);
+  background: rgba(4,8,16,0.82); backdrop-filter: blur(6px);
   display: flex; align-items: center; justify-content: center;
   z-index: 300; padding: 20px;
 }
 .cm-overlay.hidden { display: none; }
 
-/* card */
+/* ── Modal card ── */
 .cm-card {
-  background: #111d30;
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 18px;
-  width: 100%; max-width: 560px;
-  max-height: 88vh; overflow-y: auto;
-  padding: 28px;
+  background: #111d30; border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 18px; width: 100%; max-width: 560px;
+  max-height: 88vh; overflow-y: auto; padding: 28px;
   animation: slideUp 0.2s ease;
 }
-@keyframes slideUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
 
-/* header */
+/* ── Modal header ── */
 .cm-header {
   display: flex; align-items: center; gap: 16px;
   margin-bottom: 24px; padding-bottom: 20px;
@@ -148,14 +229,12 @@
 }
 .cm-avatar {
   width: 50px; height: 50px; border-radius: 13px;
-  background: rgba(232,25,60,0.14);
-  border: 1px solid rgba(232,25,60,0.24);
+  background: rgba(232,25,60,0.14); border: 1px solid rgba(232,25,60,0.24);
   color: #e8193c; font-size: 17px; font-weight: 600;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
-.cm-name { font-size: 18px; font-weight: 500; color: var(--text); margin-bottom: 3px; }
-.cm-id   { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+.cm-name  { font-size: 18px; font-weight: 500; color: var(--text); margin-bottom: 3px; }
+.cm-id    { font-size: 12px; color: var(--muted); font-family: var(--mono); }
 .cm-close {
   background: transparent; border: none; color: var(--muted);
   cursor: pointer; padding: 6px; border-radius: 8px;
@@ -163,80 +242,346 @@
 }
 .cm-close:hover { color: var(--text); }
 
-/* section label */
+/* ── Section label ── */
 .cm-section-label {
   font-size: 10px; font-weight: 600; letter-spacing: 0.12em;
-  text-transform: uppercase; color: var(--muted);
-  margin-bottom: 14px;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 14px;
   display: flex; align-items: center; gap: 10px;
 }
 
-/* loading spinner */
-.cm-loading {
-  display: none; font-size: 11px; font-weight: 400;
-  letter-spacing: 0; text-transform: none;
-  color: var(--muted); align-items: center; gap: 6px;
-}
+/* ── Loading spinner ── */
+.cm-loading { display: none; font-size: 11px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted); align-items: center; gap: 6px; }
 .cm-loading.visible { display: flex; }
-@keyframes spin { to { transform: rotate(360deg); } }
 
-/* info grid */
+/* ── Info grid ── */
 .cm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .cm-field-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; letter-spacing: 0.06em; text-transform: uppercase; }
 .cm-field-value { font-size: 13px; color: var(--text); }
 .cm-field-value.mono { font-family: var(--mono); font-size: 12px; }
 
-/* account cards */
+/* ── Account cards ── */
 .acc-card {
-  background: rgba(255,255,255,0.03);
-  border: 1px solid rgba(255,255,255,0.07);
-  border-radius: 12px; padding: 18px;
-  margin-bottom: 10px;
-  transition: border-color 0.15s;
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 12px; padding: 18px; margin-bottom: 10px; transition: border-color 0.15s;
 }
 .acc-card:last-child { margin-bottom: 0; }
 .acc-card:hover { border-color: rgba(255,255,255,0.12); }
-
-.acc-top {
-  display: flex; align-items: center;
-  justify-content: space-between; margin-bottom: 14px;
-}
+.acc-card.locked-card { border-color: rgba(200,152,26,0.25); background: rgba(200,152,26,0.04); }
+.acc-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .acc-number { font-family: var(--mono); font-size: 14px; font-weight: 500; color: var(--text); }
-
-.acc-badge {
-  font-size: 9px; font-weight: 600; letter-spacing: 0.08em;
-  text-transform: uppercase; padding: 3px 9px; border-radius: 5px;
-}
+.acc-badge { font-size: 9px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; padding: 3px 9px; border-radius: 5px; }
 .acc-badge.active { background: rgba(61,184,138,0.1);  color: #3db88a; border: 1px solid rgba(61,184,138,0.2); }
 .acc-badge.frozen { background: rgba(74,144,232,0.1);  color: #4a90e8; border: 1px solid rgba(74,144,232,0.2); }
 .acc-badge.closed { background: rgba(180,60,60,0.1);   color: #e07070; border: 1px solid rgba(180,60,60,0.18); }
-
 .acc-balance-label { font-size: 10px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 4px; }
 .acc-balance { font-size: 30px; font-weight: 300; color: var(--text); font-family: var(--mono); letter-spacing: -0.01em; margin-bottom: 14px; }
-
 .acc-meta { display: flex; gap: 24px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.05); }
-.acc-meta-item {}
 .acc-meta-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 3px; }
 .acc-meta-val   { font-size: 12px; color: var(--text); font-family: var(--mono); }
-
 .acc-empty { text-align: center; padding: 28px; color: var(--muted); font-size: 13px; }
+
+/* ── Lockout alert ── */
+.acc-lockout-alert {
+  margin-top: 12px; padding: 10px 13px;
+  background: rgba(200,152,26,0.08); border: 1px solid rgba(200,152,26,0.2);
+  border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.acc-lockout-info { display: flex; align-items: center; gap: 8px; }
+.acc-lockout-text { font-size: 11px; color: #c8981a; }
+.acc-lockout-text strong { display: block; font-size: 12px; margin-bottom: 1px; }
+.unlock-btn {
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(200,152,26,0.12); border: 1px solid rgba(200,152,26,0.3);
+  color: #c8981a; border-radius: 7px; padding: 7px 12px;
+  font-size: 11px; font-weight: 600; font-family: var(--sans);
+  cursor: pointer; white-space: nowrap; transition: all 0.15s; flex-shrink: 0;
+}
+.unlock-btn:hover { background: rgba(200,152,26,0.2); border-color: rgba(200,152,26,0.45); }
+.pin-reset-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: rgba(74,144,232,0.08); border: 1px solid rgba(74,144,232,0.2);
+  color: #4a90e8; border-radius: 5px; padding: 3px 8px;
+  font-size: 9px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+}
+
+/* ── Blocked accounts table ── */
+.blocked-table-wrap { overflow-x: auto; }
+.blocked-row {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.blocked-row:hover td { background: rgba(200,152,26,0.04); }
+.blocked-row td { border-bottom-color: rgba(200,152,26,0.08) !important; }
+
+/* ── Card pills ── */
+.card-pill {
+  display: flex; align-items: center; justify-content: space-between;
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 8px; padding: 8px 12px; margin-bottom: 6px;
+}
+.card-pill:last-child { margin-bottom: 0; }
+.card-pill-left  { display: flex; align-items: center; gap: 8px; }
+.card-pill-right { display: flex; align-items: center; gap: 8px; }
 </style>
 
 <script>
 (function () {
-  const modal   = document.getElementById('customer-modal');
-  const closeBtn = document.getElementById('cm-close');
+  // ── Shared state ─────────────────────────────────────────────────────────
+  let _unlockAccountNumber = null;
+  let _unlockCustomerData  = null;   // {name, email, phone, nationalid, dob}
+  let _currentCustomerData = null;   // for the customer-detail modal
 
-  closeBtn.addEventListener('click', () => modal.classList.add('hidden'));
-  modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') modal.classList.add('hidden'); });
+  const unlockModal  = document.getElementById('unlock-modal');
+  const unlockClose  = document.getElementById('unlock-close');
+  const unlockCancel = document.getElementById('unlock-cancel-btn');
+  const unlockDone   = document.getElementById('unlock-done-btn');
 
-  document.querySelectorAll('.customer-row').forEach(row => {
-    row.addEventListener('click', () => open(row.dataset));
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      document.getElementById('customer-modal').classList.add('hidden');
+      unlockModal.classList.add('hidden');
+    }
   });
 
-  function open(d) {
-    const initials = d.name.trim().split(/\s+/).map(w => w[0]).join('').substring(0, 2).toUpperCase();
+  // ── Unlock modal open ─────────────────────────────────────────────────────
+  window.openUnlockModal = function(accountNumber, customerData) {
+    _unlockAccountNumber = accountNumber;
+    _unlockCustomerData  = customerData;
+
+    const initials = (customerData.name || '?')
+      .trim().split(/\s+/).map(w => w[0]).join('').substring(0, 2).toUpperCase();
+    document.getElementById('unlock-avatar').textContent    = initials;
+    document.getElementById('unlock-customer-name').textContent = customerData.name || '—';
+    document.getElementById('unlock-account-label').textContent = 'Account ' + accountNumber;
+
+    document.getElementById('unlock-verify-data').innerHTML = `
+      <div class="cm-field">
+        <p class="cm-field-label">Full name</p>
+        <p class="cm-field-value">${customerData.name || '—'}</p>
+      </div>
+      <div class="cm-field">
+        <p class="cm-field-label">National ID</p>
+        <p class="cm-field-value mono">${customerData.nationalid || '—'}</p>
+      </div>
+      <div class="cm-field">
+        <p class="cm-field-label">Date of birth</p>
+        <p class="cm-field-value mono">${customerData.dob || '—'}</p>
+      </div>
+      <div class="cm-field">
+        <p class="cm-field-label">Phone</p>
+        <p class="cm-field-value mono">${customerData.phone || '—'}</p>
+      </div>
+    `;
+
+    // Reset state
+    document.getElementById('unlock-check-identity').checked = false;
+    document.getElementById('unlock-check-presence').checked = false;
+    document.getElementById('unlock-check-grant').checked    = false;
+    document.getElementById('unlock-error').style.display    = 'none';
+    document.getElementById('unlock-step-1').style.display   = '';
+    document.getElementById('unlock-step-2').style.display   = 'none';
+
+    unlockModal.classList.remove('hidden');
+  };
+
+  function closeUnlock() { unlockModal.classList.add('hidden'); }
+  unlockClose.addEventListener('click', closeUnlock);
+  unlockCancel.addEventListener('click', closeUnlock);
+  unlockDone.addEventListener('click', () => { closeUnlock(); loadBlockedAccounts(); });
+  unlockModal.addEventListener('click', e => { if (e.target === unlockModal) closeUnlock(); });
+
+  // ── Unlock confirm ────────────────────────────────────────────────────────
+  document.getElementById('unlock-confirm-btn').addEventListener('click', async function () {
+    const c1 = document.getElementById('unlock-check-identity').checked;
+    const c2 = document.getElementById('unlock-check-presence').checked;
+    const c3 = document.getElementById('unlock-check-grant').checked;
+    const errBox = document.getElementById('unlock-error');
+
+    if (!c1 || !c2 || !c3) {
+      errBox.style.display = '';
+      errBox.textContent   = 'Please confirm all three checkboxes before proceeding.';
+      return;
+    }
+    errBox.style.display = 'none';
+
+    const btn = this;
+    btn.disabled    = true;
+    btn.textContent = 'Unlocking…';
+
+    try {
+      const resp = await fetch('/admin/account/' + _unlockAccountNumber + '/unlock', { method: 'POST' });
+      const data = await resp.json();
+      if (data.status === 'ok') {
+        document.getElementById('unlock-step-1').style.display = 'none';
+        document.getElementById('unlock-step-2').style.display = '';
+      } else {
+        errBox.style.display = '';
+        errBox.textContent   = data.message || 'Unlock failed. Check middleware connectivity.';
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 019.9-1"/></svg> Unlock &amp; allow PIN reset';
+      }
+    } catch(e) {
+      errBox.style.display = '';
+      errBox.textContent   = 'Network error: ' + e.message;
+      btn.disabled = false;
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 019.9-1"/></svg> Unlock &amp; allow PIN reset';
+    }
+  });
+
+  // ── Blocked accounts table ────────────────────────────────────────────────
+  window.loadBlockedAccounts = function() {
+    const wrap = document.getElementById('blocked-accounts-wrap');
+    const sub  = document.getElementById('blocked-sub');
+    wrap.innerHTML = `
+      <div class="card" id="blocked-loading-card">
+        <div style="display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="animation:spin 1s linear infinite;"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>
+          Checking lockout status across all accounts…
+        </div>
+      </div>`;
+    sub.textContent = 'Checking lockout status…';
+
+    fetch('/admin/blocked-accounts')
+      .then(r => r.json())
+      .then(list => {
+        sub.textContent = list.length === 0
+          ? 'No blocked accounts'
+          : list.length + ' account' + (list.length === 1 ? '' : 's') + ' require attention';
+
+        if (!list || list.length === 0) {
+          wrap.innerHTML = `
+            <div class="card">
+              <div class="empty" style="padding:40px;">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round" style="display:block;margin:0 auto 12px;"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                No blocked accounts — all accounts are in good standing.
+              </div>
+            </div>`;
+          return;
+        }
+
+        // Separate: permanently locked vs awaiting pin reset
+        const permanent = list.filter(a => a.lockStatus === 'permanently_locked');
+        const pinReset  = list.filter(a => a.lockStatus === 'pin_reset_required');
+
+        let html = '';
+
+        if (permanent.length > 0) {
+          html += buildBlockedTable(permanent, 'permanently_locked');
+        }
+        if (pinReset.length > 0) {
+          html += `<div style="margin-top:16px;">` + buildBlockedTable(pinReset, 'pin_reset_required') + `</div>`;
+        }
+
+        wrap.innerHTML = html;
+
+        // Bind row clicks — each row opens unlock modal directly
+        wrap.querySelectorAll('.blocked-row[data-account-number]').forEach(row => {
+          row.addEventListener('click', () => {
+            const d = row.dataset;
+            if (d.lockStatus === 'pin_reset_required') return; // already unlocked, no action
+            openUnlockModal(d.accountNumber, {
+              name:       d.customerName,
+              email:      d.email,
+              phone:      d.phone,
+              nationalid: d.nationalid,
+              dob:        d.dob,
+            });
+          });
+        });
+      })
+      .catch(err => {
+        sub.textContent = 'Failed to load';
+        wrap.innerHTML = `
+          <div class="card">
+            <div class="empty" style="color:#e07070;">
+              Could not load blocked accounts. Check middleware connectivity.
+            </div>
+          </div>`;
+      });
+  };
+
+  function buildBlockedTable(list, type) {
+    const isPermanent = type === 'permanently_locked';
+    const label = isPermanent
+      ? '⚠ Permanently locked — requires admin unlock'
+      : '🔑 Awaiting PIN reset at ATM';
+    const headerColor  = isPermanent ? '#c8981a' : '#4a90e8';
+    const headerBg     = isPermanent ? 'rgba(200,152,26,0.06)' : 'rgba(74,144,232,0.06)';
+    const headerBorder = isPermanent ? 'rgba(200,152,26,0.15)' : 'rgba(74,144,232,0.15)';
+    const rowHint = isPermanent
+      ? '<span style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:3px;white-space:nowrap;">Unlock <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></span>'
+      : '<span style="font-size:10px;color:var(--muted);">Waiting for customer</span>';
+
+    const rows = list.map(a => {
+      const balance  = parseFloat(a.balance || 0).toFixed(2);
+      const accStatus = (a.accountStatus || '').toLowerCase();
+      const cursor = isPermanent ? 'cursor:pointer;' : 'cursor:default;';
+      return `
+        <tr class="blocked-row"
+            style="${cursor}"
+            data-account-number="${a.accountNumber}"
+            data-account-id="${a.accountId}"
+            data-customer-name="${a.customerName}"
+            data-email="${a.email}"
+            data-phone="${a.phone}"
+            data-nationalid="${a.nationalId}"
+            data-dob="${a.dateOfBirth || ''}"
+            data-lock-status="${a.lockStatus}">
+          <td>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div style="width:32px;height:32px;border-radius:8px;background:${isPermanent ? 'rgba(200,152,26,0.1)' : 'rgba(74,144,232,0.1)'};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                <span style="font-size:12px;font-weight:600;color:${headerColor};">${(a.customerName||'?').split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase()}</span>
+              </div>
+              <div>
+                <p style="font-size:13px;font-weight:500;color:var(--text);">${a.customerName || '—'}</p>
+                <p style="font-size:11px;color:var(--muted);font-family:var(--mono);">${a.email || '—'}</p>
+              </div>
+            </div>
+          </td>
+          <td><span class="mono">${a.accountNumber || '—'}</span></td>
+          <td><span class="mono" style="color:var(--text);font-weight:500;">$${balance}</span></td>
+          <td><span class="acc-badge ${accStatus}">${a.accountStatus || '—'}</span></td>
+          <td><span class="mono" style="color:var(--muted);font-size:11px;">${(a.nationalId || '—')}</span></td>
+          <td>${rowHint}</td>
+        </tr>`;
+    }).join('');
+
+    return `
+      <div class="card" style="padding:0;overflow:hidden;">
+        <div style="padding:12px 20px;background:${headerBg};border-bottom:1px solid ${headerBorder};display:flex;align-items:center;gap:8px;">
+          <span style="font-size:11px;font-weight:600;color:${headerColor};">${label}</span>
+          <span style="font-size:11px;color:var(--muted);margin-left:auto;">${list.length} account${list.length===1?'':'s'}</span>
+        </div>
+        <div class="table-wrap blocked-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Account number</th>
+                <th>Balance</th>
+                <th>Account status</th>
+                <th>National ID</th>
+                <th>${isPermanent ? 'Action' : 'Status'}</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  // ── Customer detail modal ─────────────────────────────────────────────────
+  const customerModal = document.getElementById('customer-modal');
+  document.getElementById('cm-close').addEventListener('click', () => customerModal.classList.add('hidden'));
+  customerModal.addEventListener('click', e => { if (e.target === customerModal) customerModal.classList.add('hidden'); });
+
+  document.querySelectorAll('.customer-row').forEach(row => {
+    row.addEventListener('click', () => openCustomerModal(row.dataset));
+  });
+
+  function openCustomerModal(d) {
+    _currentCustomerData = d;
+    const initials = d.name.trim().split(/\s+/).map(w=>w[0]).join('').substring(0,2).toUpperCase();
     document.getElementById('cm-avatar').textContent     = initials;
     document.getElementById('cm-name').textContent       = d.name;
     document.getElementById('cm-id').textContent         = 'Customer #' + d.id;
@@ -248,7 +593,7 @@
 
     document.getElementById('cm-accounts').innerHTML = '';
     document.getElementById('cm-loading').classList.add('visible');
-    modal.classList.remove('hidden');
+    customerModal.classList.remove('hidden');
 
     fetch('/admin/customer/' + d.id + '/accounts')
       .then(r => r.json())
@@ -259,42 +604,162 @@
           box.innerHTML = '<div class="acc-empty">No accounts linked to this customer.</div>';
           return;
         }
-        box.innerHTML = accounts.map(a => {
-          const statusKey   = (a.accountStatus || '').toLowerCase();
-          const balance     = parseFloat(a.balance || 0).toFixed(2);
-          const created     = (a.createdAt || '').substring(0, 10) || '—';
-          const accId       = a.accountId || '—';
-          return `
-            <div class="acc-card">
-              <div class="acc-top">
-                <span class="acc-number">${a.accountNumber || '—'}</span>
-                <span class="acc-badge ${statusKey}">${a.accountStatus || '—'}</span>
-              </div>
-              <p class="acc-balance-label">Available balance</p>
-              <p class="acc-balance">$${balance}</p>
-              <div class="acc-meta">
-                <div class="acc-meta-item">
-                  <p class="acc-meta-label">Account ID</p>
-                  <p class="acc-meta-val">#${accId}</p>
+        const promises = accounts.map(a =>
+          fetch('/admin/account/' + a.accountNumber + '/lockout-status')
+            .then(r => r.json()).catch(() => ({ status: 'unknown' }))
+        );
+        Promise.all(promises).then(lockoutStatuses => {
+          box.innerHTML = accounts.map((a, i) => {
+            const lockout   = lockoutStatuses[i] || {};
+            const statusKey = (a.accountStatus || '').toLowerCase();
+            const balance   = parseFloat(a.balance || 0).toFixed(2);
+            const created   = (a.createdAt || '').substring(0, 10) || '—';
+            const accId     = a.accountId || '—';
+
+            const isPermanentLock = lockout.admin_unlock_required === true;
+            const isPinReset      = lockout.status === 'pin_reset_required';
+
+            let lockoutHtml = '';
+            if (isPermanentLock) {
+              lockoutHtml = `
+                <div class="acc-lockout-alert">
+                  <div class="acc-lockout-info">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c8981a" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                    <div class="acc-lockout-text"><strong>Permanently locked</strong>Too many failed PIN attempts</div>
+                  </div>
+                  <button class="unlock-btn" onclick="openUnlockModal('${a.accountNumber}', {name:'${d.name}',email:'${d.email}',phone:'${d.phone}',nationalid:'${d.nationalid||''}',dob:'${d.dob||''}'})">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 019.9-1"/></svg>
+                    Unlock
+                  </button>
+                </div>`;
+            } else if (isPinReset) {
+              lockoutHtml = `
+                <div class="acc-lockout-alert" style="background:rgba(74,144,232,0.06);border-color:rgba(74,144,232,0.2);">
+                  <div class="acc-lockout-info">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4a90e8" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 019.9-1"/></svg>
+                    <div class="acc-lockout-text" style="color:#4a90e8;"><strong style="color:#4a90e8;">Awaiting PIN reset</strong>Admin unlocked — customer must set new PIN at ATM</div>
+                  </div>
+                  <span class="pin-reset-badge"><span style="width:5px;height:5px;border-radius:50%;background:#4a90e8;display:inline-block;animation:pd 1.8s ease-in-out infinite;"></span>Pending</span>
+                </div>`;
+            }
+
+            return `
+              <div class="${isPermanentLock ? 'acc-card locked-card' : 'acc-card'}">
+                <div class="acc-top">
+                  <span class="acc-number">${a.accountNumber || '—'}</span>
+                  <span class="acc-badge ${statusKey}">${a.accountStatus || '—'}</span>
                 </div>
-                <div class="acc-meta-item">
-                  <p class="acc-meta-label">Opened</p>
-                  <p class="acc-meta-val">${created}</p>
+                <p class="acc-balance-label">Available balance</p>
+                <p class="acc-balance">$${balance}</p>
+                <div class="acc-meta">
+                  <div class="acc-meta-item"><p class="acc-meta-label">Account ID</p><p class="acc-meta-val">#${accId}</p></div>
+                  <div class="acc-meta-item"><p class="acc-meta-label">Opened</p><p class="acc-meta-val">${created}</p></div>
+                  <div class="acc-meta-item"><p class="acc-meta-label">Status</p><p class="acc-meta-val">${a.accountStatus || '—'}</p></div>
                 </div>
-                <div class="acc-meta-item">
-                  <p class="acc-meta-label">Status</p>
-                  <p class="acc-meta-val">${a.accountStatus || '—'}</p>
+                ${lockoutHtml}
+                <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.05);">
+                  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                    <p style="font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);">Cards</p>
+                    <button class="issue-card-btn btn btn-sm btn-ghost" data-account-id="${accId}" style="font-size:10px;padding:4px 10px;">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                      Issue card
+                    </button>
+                  </div>
+                  <div class="cards-list" id="cards-list-${accId}">
+                    <p style="font-size:12px;color:var(--muted);">Loading cards…</p>
+                  </div>
                 </div>
-              </div>
-            </div>`;
-        }).join('');
+              </div>`;
+          }).join('');
+
+          accounts.forEach(acc => { if (acc.accountId) loadCards(acc.accountId); });
+        });
       })
       .catch(() => {
         document.getElementById('cm-loading').classList.remove('visible');
-        document.getElementById('cm-accounts').innerHTML =
-          '<div class="acc-empty" style="color:#e07070;">Could not load accounts.</div>';
+        document.getElementById('cm-accounts').innerHTML = '<div class="acc-empty" style="color:#e07070;">Could not load accounts.</div>';
       });
   }
+
+  // ── Cards ──────────────────────────────────────────────────────────────────
+  function loadCards(accountId) {
+    const listEl = document.getElementById('cards-list-' + accountId);
+    if (!listEl) return;
+    fetch('/admin/account/' + accountId + '/cards')
+      .then(r => r.json())
+      .then(cards => {
+        if (!cards || cards.length === 0) {
+          listEl.innerHTML = '<p style="font-size:12px;color:var(--muted);">No cards yet.</p>';
+          return;
+        }
+        listEl.innerHTML = cards.map(c => {
+          const statusClass = c.cardStatus === 'ACTIVE' ? 'active' : c.cardStatus === 'BLOCKED' ? 'frozen' : 'closed';
+          const isActive = c.cardStatus === 'ACTIVE';
+          const expiry = c.expiryDate ? c.expiryDate.substring(0,7).replace('-','/') : '—';
+          return `
+            <div class="card-pill">
+              <div class="card-pill-left">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="color:var(--muted)"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
+                <span class="mono" style="font-size:12px;color:var(--text);">${c.maskedNumber || c.cardNumber}</span>
+                <span class="acc-badge ${statusClass}" style="font-size:8px;">${c.cardStatus}</span>
+              </div>
+              <div class="card-pill-right">
+                <span style="font-size:10px;color:var(--muted);">${expiry}</span>
+                <button class="toggle-card-btn btn btn-sm"
+                  data-card-id="${c.cardId}" data-account-id="${accountId}" data-current-status="${c.cardStatus}"
+                  style="font-size:10px;padding:3px 9px;${isActive ? 'background:rgba(232,25,60,0.08);border:1px solid rgba(232,25,60,0.2);color:#e8193c;' : 'background:rgba(61,184,138,0.08);border:1px solid rgba(61,184,138,0.2);color:#3db88a;'}">
+                  ${isActive ? 'Block' : 'Unblock'}
+                </button>
+              </div>
+            </div>`;
+        }).join('');
+        listEl.querySelectorAll('.toggle-card-btn').forEach(btn => {
+          btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            const cid = this.dataset.cardId, aid = this.dataset.accountId, cur = this.dataset.currentStatus;
+            const next = cur === 'ACTIVE' ? 'BLOCKED' : 'ACTIVE';
+            this.disabled = true; this.textContent = '…';
+            try {
+              const r = await fetch('/admin/card/' + cid + '/status', {
+                method: 'PATCH', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({accountId: parseInt(aid), cardStatus: next}),
+              });
+              if (r.ok) loadCards(aid);
+              else { this.disabled = false; this.textContent = cur === 'ACTIVE' ? 'Block' : 'Unblock'; }
+            } catch(err) { this.disabled = false; }
+          });
+        });
+      })
+      .catch(() => { if (listEl) listEl.innerHTML = '<p style="font-size:11px;color:#e07070;">Could not load cards.</p>'; });
+  }
+
+  document.addEventListener('click', async function(e) {
+    const btn = e.target.closest('.issue-card-btn');
+    if (!btn) return;
+    e.stopPropagation();
+    const accountId = btn.dataset.accountId;
+    btn.disabled = true; btn.textContent = 'Issuing…';
+    try {
+      const r = await fetch('/admin/account/' + accountId + '/cards/issue', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({holderName:''}),
+      });
+      const data = await r.json();
+      if (data.status === 'ok') {
+        loadCards(accountId);
+        btn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Issue card';
+      } else {
+        alert('Card issue failed: ' + (data.message || 'Unknown error'));
+        btn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Issue card';
+      }
+    } catch(err) {
+      btn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Issue card';
+    }
+    btn.disabled = false;
+  });
+
+  // ── Boot: load blocked accounts on page load ──────────────────────────────
+  loadBlockedAccounts();
+
 })();
 </script>
 {% endblock %}

@@ -273,8 +273,8 @@ class MiddlewareClient:
 
     # ── Transaction history ───────────────────────────────────────────────────
 
-    def get_transactions_for_account(self, account_id, limit=10) -> list:
-        """GET /atm/transactions → middleware proxies to Core Banking."""
+    def get_transactions_for_account(self, account_id, limit=None) -> list:
+        """GET /atm/transactions → middleware proxies to Core Banking. Returns all transactions."""
         try:
             resp = requests.get(
                 f"{self.base_url}/atm/transactions",
@@ -282,7 +282,8 @@ class MiddlewareClient:
                 timeout=10,
             )
             if resp.ok:
-                return resp.json()[:limit]
+                data = resp.json()
+                return data[:limit] if limit else data
         except Exception:
             pass
         return []
@@ -340,7 +341,7 @@ class TransactionsRepository:
     def _client(self) -> MiddlewareClient:
         return self._accounts_repo.client
 
-    def get_transactions_for_account(self, account_id, limit=10) -> list:
+    def get_transactions_for_account(self, account_id, limit=None) -> list:
         return self._client.get_transactions_for_account(account_id, limit)
 
     def get_latest_transaction_for_account(self, account_id) -> dict | None:

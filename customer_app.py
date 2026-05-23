@@ -513,7 +513,7 @@ def transactions_api():
     if not atm:
         return jsonify({"status": "error"}), 401
     try:
-        raw = atm.transactions_repo.get_transactions_for_account(session["account"], 20)
+        raw = atm.transactions_repo.get_transactions_for_account(session["account"])
         recent = [
             {
                 "type":          t.get("transactionType") or t.get("type", ""),
