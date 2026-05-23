@@ -1,14 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Blockchain{% endblock %}
 {% block page_title %}Blockchain Contracts{% endblock %}
+{% block body_attrs %}data-admin-page="blockchain" data-auto-refresh-ms="15000"{% endblock %}
+{% block refresh_script %}<script src="{{ url_for('static', filename='admin-refresh.js') }}"></script>{% endblock %}
 
 {% block body %}
 <div class="page-header">
   <div>
     <h1 class="page-title">Blockchain contracts</h1>
-    <p class="page-sub">{{ confirmed_count }} confirmed · {{ tampered_count }} tampered · Ethereum Sepolia testnet</p>
+    <p class="page-sub" id="page-subtitle">{{ confirmed_count }} confirmed · {{ tampered_count }} tampered · Ethereum Sepolia testnet</p>
   </div>
-</div>
+  </div>
 
 <div class="filter-tabs">
   <a href="?type=ALL"      class="filter-tab {% if filter_type == 'ALL' %}active{% endif %}">All confirmed</a>
@@ -17,7 +19,7 @@
 
 <div class="card">
   {% if contracts %}
-  <div class="table-wrap">
+  <div class="table-wrap" id="blockchain-table-wrap">
     <table>
       <thead>
         <tr>
@@ -31,7 +33,7 @@
           <th>Created</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody id="blockchain-tbody">
         {% for c in contracts %}
         <tr>
           <td><span class="mono" style="color:var(--muted);">#{{ c.transactionId }}</span></td>
@@ -79,7 +81,7 @@
     </table>
   </div>
   {% else %}
-    <div class="empty">No confirmed blockchain contracts yet. Transactions are logged as they confirm on Sepolia.</div>
+    <div class="empty" id="blockchain-empty">No confirmed blockchain contracts yet. Transactions are logged as they confirm on Sepolia.</div>
   {% endif %}
 </div>
 

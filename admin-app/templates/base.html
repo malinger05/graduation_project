@@ -239,7 +239,7 @@
     .empty { text-align: center; padding: 60px; color: var(--muted); font-size: 13px; }
   </style>
 </head>
-<body>
+<body {% block body_attrs %}{% endblock %}>
 
 <!-- Sidebar -->
 <aside class="sidebar">
@@ -304,6 +304,7 @@
     <span class="topbar-title">{% block page_title %}{% endblock %}</span>
     <div class="topbar-right">
       <span class="core-banking-badge">Core Banking · localhost:8080</span>
+      <span id="admin-live-badge" class="core-banking-badge" style="display:none;color:#3db88a;border-color:rgba(61,184,138,0.25);" title="Auto-refresh active">● live</span>
     </div>
   </div>
 
@@ -328,5 +329,6 @@ setTimeout(() => {
   if (s) { s.style.transition = 'opacity 0.5s'; s.style.opacity = '0'; }
 }, 5000);
 </script>
+{% block refresh_script %}{% endblock %}
 </body>
 </html>

@@ -69,7 +69,11 @@ LOCKOUT_MINUTES = _lockout_minutes_list()
 CONTRACT_ADDRESS  = _str("CONTRACT_ADDRESS")
 ETH_PRIVATE_KEY   = _str("ETH_PRIVATE_KEY")
 RPC_URL           = _str("ETH_RPC_URL", "https://ethereum-sepolia.publicnode.com")
-RPC_FALLBACK_URLS = [u.strip() for u in _str("ETH_RPC_FALLBACK_URLS").split(",") if u.strip()]
+_RPC_FALLBACKS    = _str(
+    "ETH_RPC_FALLBACK_URLS",
+    "https://sepolia.drpc.org,https://1rpc.io/sepolia",
+)
+RPC_FALLBACK_URLS = [u.strip() for u in _RPC_FALLBACKS.split(",") if u.strip()]
 
 # ── Reconciliation worker ──────────────────────────────────────────────────────
 

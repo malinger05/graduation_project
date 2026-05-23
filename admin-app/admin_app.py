@@ -108,6 +108,48 @@ def login_required(view):
     return wrapped
 
 
+def _fetch_all_transactions(limit: int = 500) -> list:
+    resp = _cb_service("get", "/admin/transactions", params={"limit": limit})
+    if not resp or not resp.ok:
+        return []
+    return resp.json()
+
+
+def _chain_status_counts(txns: list) -> dict:
+    counts = {
+        "pending": 0, "submitted": 0, "confirmed": 0,
+        "failed": 0, "tampered": 0,
+    }
+    for t in txns:
+        s = t.get("chainStatus") or "PENDING_SUBMIT"
+        if s == "PENDING_SUBMIT":
+            counts["pending"] += 1
+        elif s == "SUBMITTED":
+            counts["submitted"] += 1
+        elif s == "CONFIRMED":
+            counts["confirmed"] += 1
+        elif s == "FAILED_SUBMIT":
+            counts["failed"] += 1
+        elif s == "TAMPERED":
+            counts["tampered"] += 1
+    return counts
+
+
+def _fetch_dashboard_stats() -> dict:
+    customers_resp = _cb("get", "/customers")
+    customers = customers_resp.json() if customers_resp and customers_resp.ok else []
+    txns = _fetch_all_transactions()
+    counts = _chain_status_counts(txns)
+    return {
+        "totalCustomers": len(customers),
+        "pendingCount": counts["pending"],
+        "submittedCount": counts["submitted"],
+        "confirmedCount": counts["confirmed"],
+        "failedCount": counts["failed"],
+        "tamperedCount": counts["tampered"],
+    }
+
+
 # ── Auth routes ───────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -164,24 +206,15 @@ def logout():
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    customers_resp = _cb("get", "/customers")
-    customers = customers_resp.json() if customers_resp and customers_resp.ok else []
-
-    txns_resp = _cb_service("get", "/admin/transactions/pending-submit", params={"limit": 100})
-    pending = txns_resp.json() if txns_resp and txns_resp.ok else []
-
-    submitted_resp = _cb_service("get", "/admin/transactions/submitted", params={"limit": 100})
-    submitted = submitted_resp.json() if submitted_resp and submitted_resp.ok else []
-
-    confirmed_resp = _cb_service("get", "/admin/transactions/for-tamper-check", params={"limit": 100})
-    confirmed = confirmed_resp.json() if confirmed_resp and confirmed_resp.ok else []
-
+    stats = _fetch_dashboard_stats()
     return render_template("dashboard.html",
         admin=session.get("admin_username"),
-        total_customers=len(customers),
-        pending_count=len(pending),
-        submitted_count=len(submitted),
-        confirmed_count=len(confirmed),
+        total_customers=stats["totalCustomers"],
+        pending_count=stats["pendingCount"],
+        submitted_count=stats["submittedCount"],
+        confirmed_count=stats["confirmedCount"],
+        failed_count=stats["failedCount"],
+        tampered_count=stats["tamperedCount"],
     )
 
 
@@ -275,9 +308,21 @@ def register_customer():
 @app.route("/transactions")
 @login_required
 def transactions():
-    resp = _cb_service("get", "/admin/transactions", params={"limit": 200})
-    txn_list = resp.json() if resp and resp.ok else []
-    return render_template("transactions.html", transactions=txn_list)
+    filter_status = request.args.get("status", "ALL").upper()
+    all_txns = _fetch_all_transactions()
+    counts = _chain_status_counts(all_txns)
+    if filter_status != "ALL":
+        txn_list = [t for t in all_txns if (t.get("chainStatus") or "PENDING_SUBMIT") == filter_status]
+    else:
+        txn_list = all_txns
+    txn_list.sort(key=lambda x: x.get("createdAt") or "", reverse=True)
+    return render_template("transactions.html",
+        transactions=txn_list,
+        filter_status=filter_status,
+        pending_count=counts["pending"],
+        submitted_count=counts["submitted"],
+        confirmed_count=counts["confirmed"],
+    )
 
 
 # ── Blockchain ────────────────────────────────────────────────────────────────
@@ -285,9 +330,73 @@ def transactions():
 @app.route("/blockchain")
 @login_required
 def blockchain():
-    resp = _cb_service("get", "/admin/transactions/for-tamper-check", params={"limit": 200})
-    confirmed_list = resp.json() if resp and resp.ok else []
-    return render_template("blockchain.html", transactions=confirmed_list)
+    filter_type = request.args.get("type", "ALL").upper()
+    all_txns = _fetch_all_transactions()
+    confirmed = [t for t in all_txns if t.get("chainStatus") == "CONFIRMED"]
+    tampered = [t for t in all_txns if t.get("chainStatus") == "TAMPERED"]
+    if filter_type == "TAMPERED":
+        contracts = tampered
+    else:
+        contracts = confirmed
+    contracts.sort(key=lambda x: x.get("createdAt") or "", reverse=True)
+    return render_template("blockchain.html",
+        contracts=contracts,
+        filter_type=filter_type,
+        confirmed_count=len(confirmed),
+        tampered_count=len(tampered),
+    )
+
+
+# ── Live refresh JSON (admin UI polling) ──────────────────────────────────────
+
+@app.route("/admin/api/dashboard")
+@login_required
+def api_dashboard():
+    return jsonify(_fetch_dashboard_stats())
+
+
+@app.route("/admin/api/transactions")
+@login_required
+def api_transactions():
+    filter_status = request.args.get("status", "ALL").upper()
+    all_txns = _fetch_all_transactions()
+    counts = _chain_status_counts(all_txns)
+    if filter_status != "ALL":
+        txn_list = [t for t in all_txns if (t.get("chainStatus") or "PENDING_SUBMIT") == filter_status]
+    else:
+        txn_list = all_txns
+    txn_list.sort(key=lambda x: x.get("createdAt") or "", reverse=True)
+    return jsonify({
+        "filterStatus": filter_status,
+        "counts": {
+            "pending": counts["pending"],
+            "submitted": counts["submitted"],
+            "confirmed": counts["confirmed"],
+            "failed": counts["failed"],
+            "tampered": counts["tampered"],
+        },
+        "transactions": txn_list,
+    })
+
+
+@app.route("/admin/api/blockchain")
+@login_required
+def api_blockchain():
+    filter_type = request.args.get("type", "ALL").upper()
+    all_txns = _fetch_all_transactions()
+    confirmed = [t for t in all_txns if t.get("chainStatus") == "CONFIRMED"]
+    tampered = [t for t in all_txns if t.get("chainStatus") == "TAMPERED"]
+    if filter_type == "TAMPERED":
+        contracts = tampered
+    else:
+        contracts = confirmed
+    contracts.sort(key=lambda x: x.get("createdAt") or "", reverse=True)
+    return jsonify({
+        "filterType": filter_type,
+        "confirmedCount": len(confirmed),
+        "tamperedCount": len(tampered),
+        "contracts": contracts,
+    })
 
 
 # ── Customer / Account APIs ───────────────────────────────────────────────────

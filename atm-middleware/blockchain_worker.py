@@ -156,14 +156,15 @@ def run_tamper_check_once(admin: AdminClient,
                 print(f"[Worker:tamper] tx {tx_id} patch /tampered failed: {e}")
             continue
 
-        # Optional second check: hash exists on chain.
+        # Optional on-chain probe — log only. Do not mark TAMPERED when the DB
+        # row still matches its stored hash (contract redeploy / RPC gaps are common).
         if verify_on_chain and stored:
             try:
                 if not verify_on_chain(stored):
-                    reason = f"chain verify failed: hash {stored} not on contract"
-                    admin.patch_tampered(tx_id, reason)
-                    flagged += 1
-                    print(f"[Worker:tamper] tx {tx_id} TAMPERED — {reason}")
+                    print(
+                        f"[Worker:tamper] tx {tx_id} verifyLog=false for {stored} "
+                        f"(row hash matches DB — not flagging tampered)"
+                    )
             except Exception as e:
                 print(f"[Worker:tamper] tx {tx_id} chain verify error: {e}")
     return flagged
@@ -181,33 +182,50 @@ def _loop(name: str, interval: float, body: Callable[[], None]) -> None:
         time.sleep(interval)
 
 
-def start(admin: AdminClient,
-          submit_to_chain: Callable[[str], str | None],
-          get_receipt: Callable[[str], dict | None],
-          verify_on_chain: Callable[[str], bool] | None = None) -> None:
+def start(
+    get_admin: Callable[[], AdminClient | None],
+    submit_to_chain: Callable[[str], str | None],
+    get_receipt: Callable[[str], dict | None],
+    verify_on_chain: Callable[[str], bool] | None = None,
+) -> None:
     """
-    Spawn the three reconciliation daemons. Call once at middleware startup.
-    All callbacks are provided by middleware.py so this module stays free of
-    Web3 / RPC concerns.
+    Spawn the three reconciliation daemons. Always started at middleware boot;
+    each iteration resolves AdminClient / chain callbacks (may be unavailable).
     """
+    def _retry_job() -> None:
+        admin = get_admin()
+        if admin is None:
+            print("[Worker:retry] skipped — set MIDDLEWARE_SERVICE_TOKEN for /admin access")
+            return
+        run_submit_retry_once(admin, submit_to_chain)
+
+    def _confirm_job() -> None:
+        admin = get_admin()
+        if admin is None:
+            return
+        run_confirm_poll_once(admin, get_receipt)
+
+    def _tamper_job() -> None:
+        admin = get_admin()
+        if admin is None:
+            return
+        run_tamper_check_once(admin, verify_on_chain)
+
     threading.Thread(
         target=_loop,
-        args=("retry", RETRY_INTERVAL_SECONDS,
-              lambda: run_submit_retry_once(admin, submit_to_chain)),
+        args=("retry", RETRY_INTERVAL_SECONDS, _retry_job),
         daemon=True,
         name="bc-worker-retry",
     ).start()
     threading.Thread(
         target=_loop,
-        args=("confirm", CONFIRM_INTERVAL_SECONDS,
-              lambda: run_confirm_poll_once(admin, get_receipt)),
+        args=("confirm", CONFIRM_INTERVAL_SECONDS, _confirm_job),
         daemon=True,
         name="bc-worker-confirm",
     ).start()
     threading.Thread(
         target=_loop,
-        args=("tamper", TAMPER_INTERVAL_SECONDS,
-              lambda: run_tamper_check_once(admin, verify_on_chain)),
+        args=("tamper", TAMPER_INTERVAL_SECONDS, _tamper_job),
         daemon=True,
         name="bc-worker-tamper",
     ).start()

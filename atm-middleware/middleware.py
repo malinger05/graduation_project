@@ -147,21 +147,28 @@ async def lifespan(app: FastAPI):
 
     print("[Middleware] Banking data lives in Core Banking; middleware DB holds operational state only.")
 
-    admin = _get_admin_client()
-    if admin and CONTRACT_ADDRESS and ETH_PRIVATE_KEY:
-        blockchain_worker.start(
-            admin=admin,
-            submit_to_chain=_submit_to_blockchain,
-            get_receipt=_get_chain_receipt,
-            verify_on_chain=_verify_log_on_chain,
+    # Always run reconciliation worker threads in the background (submit-retry,
+    # confirm-poll, tamper-check). Each loop resolves config on every tick so
+    # banking still works when secrets are missing; chain jobs retry once ready.
+    blockchain_worker.start(
+        get_admin=_get_admin_client,
+        submit_to_chain=_submit_to_blockchain,
+        get_receipt=_get_chain_receipt,
+        verify_on_chain=_verify_log_on_chain,
+    )
+    print("[Middleware] Blockchain reconciliation worker threads started (background).")
+    missing = []
+    if not SERVICE_TOKEN:
+        missing.append("MIDDLEWARE_SERVICE_TOKEN")
+    if not CONTRACT_ADDRESS:
+        missing.append("CONTRACT_ADDRESS")
+    if not ETH_PRIVATE_KEY:
+        missing.append("ETH_PRIVATE_KEY")
+    if missing:
+        print(
+            f"[Middleware] Worker running but chain reconciliation inactive until "
+            f"configured: {', '.join(missing)}"
         )
-        print("[Middleware] Blockchain reconciliation worker started.")
-    else:
-        missing = []
-        if not admin:             missing.append("MIDDLEWARE_SERVICE_TOKEN")
-        if not CONTRACT_ADDRESS:  missing.append("CONTRACT_ADDRESS")
-        if not ETH_PRIVATE_KEY:   missing.append("ETH_PRIVATE_KEY")
-        print(f"[Middleware] Worker NOT started — missing: {', '.join(missing)}")
 
     yield
 

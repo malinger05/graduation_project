@@ -120,9 +120,10 @@ cd atm-middleware
 python3 middleware.py          # FastAPI on localhost:8000
 ```
 
-On startup the middleware logs whether the reconciliation worker started.
-If you see `Worker NOT started — missing: ...`, set the missing keychain
-entries above and restart.
+On startup the middleware always starts blockchain reconciliation worker
+threads in the background. If secrets are missing you will see
+`Worker running but chain reconciliation inactive until configured: ...` —
+set those keychain entries and restart (or wait; each worker tick re-checks).
 
 ## 6) Start the UI (Layer 1)
 

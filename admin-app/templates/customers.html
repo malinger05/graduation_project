@@ -759,6 +759,9 @@
 
   // ── Boot: load blocked accounts on page load ──────────────────────────────
   loadBlockedAccounts();
+  setInterval(function () {
+    if (!document.hidden) loadBlockedAccounts();
+  }, 20000);
 
 })();
 </script>

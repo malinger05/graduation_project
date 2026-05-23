@@ -39,6 +39,13 @@ IDEMPOTENCY_TTL = timedelta(hours=24)
 IN_PROGRESS_STALE_AFTER = timedelta(seconds=60)
 
 
+def _aware_utc(dt: datetime) -> datetime:
+    """Normalize DB timestamps (naive UTC from SQLite) for comparison with now()."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _fingerprint(endpoint: str, account_number: str, request_body: dict) -> str:
     """Stable SHA-256 of the request — used to detect key reuse with a different body."""
     payload = json.dumps(
@@ -90,12 +97,12 @@ def begin(
 
         if rec is not None:
             # Expired? Drop it and treat as fresh.
-            if rec.expires_at <= now:
+            if _aware_utc(rec.expires_at) <= now:
                 s.delete(rec)
                 s.flush()
                 rec = None
             # Stale in-progress? Previous attempt almost certainly crashed.
-            elif rec.status == "in_progress" and (now - rec.created_at) > IN_PROGRESS_STALE_AFTER:
+            elif rec.status == "in_progress" and (now - _aware_utc(rec.created_at)) > IN_PROGRESS_STALE_AFTER:
                 s.delete(rec)
                 s.flush()
                 rec = None

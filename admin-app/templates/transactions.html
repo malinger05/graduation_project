@@ -1,12 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Transactions{% endblock %}
 {% block page_title %}Transactions{% endblock %}
+{% block body_attrs %}data-admin-page="transactions" data-auto-refresh-ms="15000"{% endblock %}
+{% block refresh_script %}<script src="{{ url_for('static', filename='admin-refresh.js') }}"></script>{% endblock %}
 
 {% block body %}
 <div class="page-header">
   <div>
     <h1 class="page-title">All transactions</h1>
-    <p class="page-sub">{{ pending_count }} pending · {{ submitted_count }} submitted · {{ confirmed_count }} confirmed</p>
+    <p class="page-sub" id="page-subtitle">{{ pending_count }} pending · {{ submitted_count }} submitted · {{ confirmed_count }} confirmed</p>
   </div>
 </div>
 
@@ -21,7 +23,7 @@
 
 <div class="card">
   {% if transactions %}
-  <div class="table-wrap">
+  <div class="table-wrap" id="transactions-table-wrap">
     <table>
       <thead>
         <tr>
@@ -37,7 +39,7 @@
           <th>Created</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody id="transactions-tbody">
         {% for t in transactions %}
         <tr>
           <td><span class="mono" style="color:var(--muted);">#{{ t.transactionId }}</span></td>
@@ -84,7 +86,7 @@
     </table>
   </div>
   {% else %}
-    <div class="empty">No transactions found for this filter.</div>
+    <div class="empty" id="transactions-empty">No transactions found for this filter.</div>
   {% endif %}
 </div>
 {% endblock %}

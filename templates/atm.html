@@ -1339,6 +1339,10 @@
         background: rgba(232, 25, 60, 0.07);
         color: var(--red);
       }
+      .cb-t {
+        background: rgba(232, 25, 60, 0.07);
+        color: var(--red);
+      }
       .txn-empty {
         flex: 1;
         display: flex;
@@ -2789,6 +2793,15 @@
       }
 
       // ── Transactions ──
+      function chainStatusBadge(chainStatus) {
+        if (chainStatus === 'CONFIRMED') return 'cb-c ⛓ confirmed';
+        if (chainStatus === 'SUBMITTED') return 'cb-s ⏳ submitted';
+        if (chainStatus === 'FAILED_SUBMIT') return 'cb-f ✗ failed';
+        if (chainStatus === 'TAMPERED') return 'cb-t ⚠ tampered';
+        if (chainStatus === 'PENDING_SUBMIT') return 'cb-p ● pending';
+        return 'cb-p ● pending';
+      }
+
       function showTransactions(){
         goTo('transactions');
         document.getElementById('txn-count').textContent='Loading…';
@@ -2808,7 +2821,7 @@
             var icon=isD
               ?'<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg>'
               :'<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
-            var badge=t.chain_status==='CONFIRMED'?'cb-c ⛓ confirmed':t.chain_status==='SUBMITTED'?'cb-s ⏳ submitted':t.chain_status==='FAILED_SUBMIT'?'cb-f ✗ failed':'cb-p ● pending';
+            var badge=chainStatusBadge(t.chain_status);
             var bClass=badge.split(' ')[0]; var bText=badge.substring(badge.indexOf(' ')+1);
             html+='<div class="txn-row"><div class="ti '+(isD?'ti-d':'ti-w')+'">'+icon+'</div><div class="txn-info"><div class="txn-type">'+t.type.replace(/_/g,' ')+'</div><div class="txn-time">'+(t.timestamp||'').substring(0,19).replace('T',' ')+'</div></div><div class="txn-right"><div class="txn-amt '+(isD?'d':'w')+'">'+(isD?'+':'-')+'$'+parseFloat(t.amount).toFixed(2)+'</div><div><span class="chain-badge '+bClass+'">'+bText+'</span></div></div></div>';
           });
@@ -2816,6 +2829,38 @@
         })
         .catch(()=>{document.getElementById('txn-list').innerHTML='<div class="txn-empty">Could not load transactions.</div>';});
       }
+
+      var _txnPollTimer = null;
+      (function () {
+        var _origShowTransactions = showTransactions;
+        showTransactions = function () {
+          _origShowTransactions();
+          if (_txnPollTimer) clearInterval(_txnPollTimer);
+          _txnPollTimer = setInterval(function () {
+            var pg = document.getElementById('page-transactions');
+            if (!pg || !pg.classList.contains('active')) return;
+            fetch('/transactions-api')
+              .then(function (r) { return r.json(); })
+              .then(function (d) {
+                if (d.status !== 'ok' || !d.transactions || !d.transactions.length) return;
+                document.getElementById('txn-count').textContent = d.transactions.length + ' transactions';
+                var html = '';
+                d.transactions.forEach(function (t) {
+                  var isD = t.type === 'DEPOSIT' || t.type === 'TRANSFER_IN';
+                  var icon = isD
+                    ? '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg>'
+                    : '<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+                  var badge = chainStatusBadge(t.chain_status);
+                  var bClass = badge.split(' ')[0];
+                  var bText = badge.substring(badge.indexOf(' ') + 1);
+                  html += '<div class="txn-row"><div class="ti ' + (isD ? 'ti-d' : 'ti-w') + '">' + icon + '</div><div class="txn-info"><div class="txn-type">' + t.type.replace(/_/g, ' ') + '</div><div class="txn-time">' + (t.timestamp || '').substring(0, 19).replace('T', ' ') + '</div></div><div class="txn-right"><div class="txn-amt ' + (isD ? 'd' : 'w') + '">' + (isD ? '+' : '-') + '$' + parseFloat(t.amount).toFixed(2) + '</div><div><span class="chain-badge ' + bClass + '">' + bText + '</span></div></div></div>';
+                });
+                document.getElementById('txn-list').innerHTML = html;
+              })
+              .catch(function () {});
+          }, 15000);
+        };
+      })();
 
       // ── Amount input ──
       function doOp(type){
