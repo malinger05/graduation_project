@@ -67,6 +67,7 @@ def init_db() -> bool:
 
     Base.metadata.create_all(bind=_engine)
     _migrate_login_lockouts(_engine)
+    _migrate_session_state(_engine)
     _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
     return True
 
@@ -92,6 +93,19 @@ def _migrate_login_lockouts(engine: Engine) -> None:
             text(
                 "ALTER TABLE login_lockouts "
                 "ADD COLUMN IF NOT EXISTS must_reset_pin BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        )
+
+
+def _migrate_session_state(engine: Engine) -> None:
+    """Add card_number column to session_state on existing deployments."""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE session_state "
+                "ADD COLUMN IF NOT EXISTS card_number VARCHAR NOT NULL DEFAULT ''"
             )
         )
 

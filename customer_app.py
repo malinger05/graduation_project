@@ -28,7 +28,7 @@ from atm_architecture import (
 
 app = Flask(__name__)
 app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
-app.config["SESSION_COOKIE_NAME"] = "atm_session"   # ← add this
+app.config["SESSION_COOKIE_NAME"] = "atm_session"
 app.config["SESSION_COOKIE_PATH"] = "/"
 
 @app.context_processor
@@ -135,7 +135,7 @@ def build_qr_data_uri(content):
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if not session.get("account"):
+        if not session.get("card_number"):   # CHANGED from "account"
             return redirect(url_for("atm_home"))
         return view(*args, **kwargs)
     return wrapped
@@ -181,7 +181,7 @@ def atm_home():
     Single-page ATM shell. If logged in, passes balance/name so JS
     can skip straight to the menu. If not logged in, shows idle/login screen.
     """
-    if session.get("account"):
+    if session.get("card_number"):   # CHANGED from "account"
         atm = _get_session_atm()
         if not atm:
             session.clear()
@@ -200,7 +200,7 @@ def atm_home():
             logged_in=True,
             full_name=session.get("full_name", "Customer"),
             balance=balance,
-            account=session.get("account", ""),
+            account=session.get("account", ""),      # account number still used for display
             last_qr=session.get("last_qr"),
         )
     return render_template("atm.html",
@@ -218,15 +218,16 @@ def dashboard():
     return redirect(url_for("atm_home"))
 
 
-@app.route("/check-account", methods=["POST"])
-def check_account():
-    account = (request.form.get("account") or "").strip()
-    if not account:
-        return jsonify({"status": "error", "message": "Enter account number."}), 400
+@app.route("/check-card", methods=["POST"])
+@app.route("/check-account", methods=["POST"])  # frontend compatibility
+def check_card():
+    card_number = (request.form.get("card_number") or request.form.get("account") or "").strip()
+    if not card_number:
+        return jsonify({"status": "error", "message": "Enter card number."}), 400
 
     try:
         repo = AccountsRepository(MIDDLEWARE_URL)
-        result = repo.check_account_status(account)
+        result = repo.check_account_status(card_number)   # passes card_number as key
     except RuntimeError as e:
         return jsonify({"status": "error", "message": str(e)}), 503
     except Exception as e:
@@ -235,40 +236,40 @@ def check_account():
     status = result.get("status", "ok")
     if status == "pin_reset_required":
         return jsonify({
-            "status": "pin_reset_required",
-            "account": account,
-            "message": "Your account was unlocked by the bank. You must set a new PIN before logging in.",
+            "status":      "pin_reset_required",
+            "card_number": card_number,
+            "message":     "Your card was unlocked by the bank. You must set a new PIN before logging in.",
         })
     if status == "locked":
         if result.get("admin_unlock_required"):
             return jsonify({
-                "status": "locked",
+                "status":               "locked",
                 "admin_unlock_required": True,
                 "remaining_lock_seconds": 0,
-                "message": "Account locked. Contact an administrator to unlock.",
+                "message":              "Card locked. Contact an administrator to unlock.",
             }), 403
         remaining = int(result.get("remaining_lock_seconds", 300))
         mins, secs = divmod(remaining, 60)
         return jsonify({
-            "status": "locked",
+            "status":                 "locked",
             "remaining_lock_seconds": remaining,
-            "message": f"Account locked. Try again in {mins:02d}:{secs:02d}.",
+            "message":                f"Card locked. Try again in {mins:02d}:{secs:02d}.",
         }), 403
 
-    return jsonify({"status": "ok", "account": account})
+    return jsonify({"status": "ok", "card_number": card_number})
 
 
 @app.route("/login", methods=["POST"])
 def login():
-    account = (request.form.get("account") or "").strip()
-    pin = (request.form.get("pin") or "").strip()
+    card_number = (request.form.get("card_number") or request.form.get("account") or "").strip()
+    pin         = (request.form.get("pin") or "").strip()
 
-    if not account or not pin:
-        return jsonify({"status": "error", "message": "Enter account number and PIN."}), 400
+    if not card_number or not pin:
+        return jsonify({"status": "error", "message": "Enter card number and PIN."}), 400
 
     try:
         accounts_repo = AccountsRepository(MIDDLEWARE_URL)
-        auth_result = accounts_repo.authenticate_with_status(account, pin)
+        auth_result   = accounts_repo.authenticate_with_status(card_number, pin)  # CHANGED
     except RuntimeError as e:
         return jsonify({"status": "error", "message": str(e)}), 503
     except Exception as e:
@@ -278,66 +279,72 @@ def login():
 
     if auth_status == "pin_reset_required":
         return jsonify({
-            "status": "pin_reset_required",
-            "account": account,
-            "message": "Your account was unlocked by the bank. Please set a new PIN.",
+            "status":      "pin_reset_required",
+            "card_number": card_number,
+            "message":     "Your card was unlocked by the bank. Please set a new PIN.",
         }), 403
 
     if auth_status == "locked":
         if auth_result.get("admin_unlock_required"):
             return jsonify({
-                "status": "locked",
+                "status":               "locked",
                 "admin_unlock_required": True,
                 "remaining_lock_seconds": 0,
-                "message": "Account locked. Contact an administrator to unlock.",
+                "message":              "Card locked. Contact an administrator to unlock.",
             }), 403
         remaining = int(auth_result.get("remaining_lock_seconds", 300))
         mins, secs = divmod(remaining, 60)
         return jsonify({
-            "status": "locked",
+            "status":                 "locked",
             "remaining_lock_seconds": remaining,
-            "message": f"Account locked. Try again in {mins:02d}:{secs:02d}.",
+            "message":                f"Card locked. Try again in {mins:02d}:{secs:02d}.",
         }), 403
 
     if auth_status != "ok":
         attempts = auth_result.get("attempts_to_next_lock")
-        msg = f"Invalid credentials. {attempts} attempt(s) left before lockout." if attempts else "Invalid account number or PIN."
+        msg = (
+            f"Invalid credentials. {attempts} attempt(s) left before lockout."
+            if attempts
+            else "Invalid card number or PIN."
+        )
         return jsonify({"status": "invalid", "message": msg}), 401
 
     # Success — create session
     import secrets as _s
-    atm_key = _s.token_hex(8)
+    atm_key           = _s.token_hex(8)
     transactions_repo = TransactionsRepository(accounts_repo)
-    atm = ATMApp(accounts_repo, transactions_repo)
-    atm.current_account = account
+    atm               = ATMApp(accounts_repo, transactions_repo)
+    atm.current_account = auth_result.get("accountNumber", card_number)
     _register_atm_session(atm_key, atm)
 
-    user = auth_result["account"]
-    session["account"] = account
-    session["full_name"] = user.get("name", "Customer")
-    session["user_id"] = user.get("account_id", account)
-    session["atm_key"] = atm_key
+    user = auth_result.get("account", {})
+    session["card_number"] = card_number                              # CHANGED — primary session key
+    session["account"]     = auth_result.get("accountNumber", "")    # resolved account number for display
+    session["full_name"]   = user.get("name", "Customer")
+    session["user_id"]     = user.get("account_id", "")
+    session["atm_key"]     = atm_key
 
     return jsonify({
-        "status": "ok",
-        "full_name": user.get("name", "Customer"),
-        "balance": float(user.get("balance", 0)),
-        "account": account,
+        "status":      "ok",
+        "full_name":   user.get("name", "Customer"),
+        "balance":     float(user.get("balance", 0)),
+        "card_number": card_number,
+        "account":     auth_result.get("accountNumber", ""),
     })
 
 
 @app.route("/reset-pin", methods=["POST"])
 def reset_pin():
-    account = (request.form.get("account") or "").strip()
-    new_pin = (request.form.get("newPin") or "").strip()
-    confirm_pin = (request.form.get("confirmPin") or "").strip()
+    card_number  = (request.form.get("card_number") or request.form.get("account") or "").strip()
+    new_pin      = (request.form.get("newPin") or "").strip()
+    confirm_pin  = (request.form.get("confirmPin") or "").strip()
 
-    if not account or not new_pin or not confirm_pin:
-        return jsonify({"status": "error", "message": "Enter account number and PIN twice."}), 400
+    if not card_number or not new_pin or not confirm_pin:
+        return jsonify({"status": "error", "message": "Enter card number and PIN twice."}), 400
 
     try:
-        repo = AccountsRepository(MIDDLEWARE_URL)
-        result = repo.reset_pin(account, new_pin, confirm_pin)
+        repo   = AccountsRepository(MIDDLEWARE_URL)
+        result = repo.reset_pin(card_number, new_pin, confirm_pin)   # CHANGED
     except RuntimeError as e:
         return jsonify({"status": "error", "message": str(e)}), 503
     except Exception as e:
@@ -345,12 +352,12 @@ def reset_pin():
 
     if result.get("status") != "ok":
         return jsonify({
-            "status": "error",
+            "status":  "error",
             "message": result.get("message", "Could not reset PIN."),
         }), 400
 
     return jsonify({
-        "status": "ok",
+        "status":  "ok",
         "message": result.get("message", "PIN updated. Please log in with your new PIN."),
     })
 
@@ -412,19 +419,19 @@ def withdraw():
 
     if ok and isinstance(result, dict):
         qr = _attach_qr({
-            "type": "WITHDRAW",
-            "amount": amount,
+            "type":         "WITHDRAW",
+            "amount":       amount,
             "blockchain_tx": result.get("blockchainTx"),
-            "verify_url": result.get("verifyUrl"),
+            "verify_url":   result.get("verifyUrl"),
         })
         return jsonify({
-            "status": "ok",
-            "message": msg,
-            "newBalance": result.get("newBalance", 0),
-            "blockchainTx": result.get("blockchainTx", ""),
+            "status":        "ok",
+            "message":       msg,
+            "newBalance":    result.get("newBalance", 0),
+            "blockchainTx":  result.get("blockchainTx", ""),
             "middlewareTxId": result.get("middlewareTxId") or result.get("transactionId"),
             "transactionId": result.get("transactionId"),
-            "qr": qr,
+            "qr":            qr,
         })
 
     return jsonify({"status": "error", "message": msg}), 400
@@ -477,17 +484,17 @@ def deposit():
 
     if ok and isinstance(result, dict):
         qr = _attach_qr({
-            "type": "DEPOSIT",
-            "amount": amount,
+            "type":         "DEPOSIT",
+            "amount":       amount,
             "blockchain_tx": result.get("blockchainTx"),
-            "verify_url": result.get("verifyUrl"),
+            "verify_url":   result.get("verifyUrl"),
         })
         return jsonify({
-            "status": "ok",
-            "message": msg,
-            "newBalance": result.get("newBalance", 0),
+            "status":       "ok",
+            "message":      msg,
+            "newBalance":   result.get("newBalance", 0),
             "blockchainTx": result.get("blockchainTx", ""),
-            "qr": qr,
+            "qr":           qr,
         })
 
     return jsonify({"status": "error", "message": msg}), 400
@@ -516,13 +523,13 @@ def transactions_api():
         raw = atm.transactions_repo.get_transactions_for_account(session["account"])
         recent = [
             {
-                "type":          t.get("transactionType") or t.get("type", ""),
-                "amount":        float(t.get("amount", 0) or 0),
-                "timestamp":     str(t.get("createdAt") or t.get("created_at", "")),
-                "status":        t.get("transactionStatus") or t.get("status", "APPROVED"),
+                "type":           t.get("transactionType") or t.get("type", ""),
+                "amount":         float(t.get("amount", 0) or 0),
+                "timestamp":      str(t.get("createdAt") or t.get("created_at", "")),
+                "status":         t.get("transactionStatus") or t.get("status", "APPROVED"),
                 "transaction_id": t.get("transactionId"),
-                "chain_status":  t.get("chainStatus", "PENDING_SUBMIT"),
-                "blockchain_tx": t.get("blockchainTx", ""),
+                "chain_status":   t.get("chainStatus", "PENDING_SUBMIT"),
+                "blockchain_tx":  t.get("blockchainTx", ""),
             }
             for t in raw
         ]

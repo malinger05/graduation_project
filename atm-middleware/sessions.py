@@ -45,6 +45,7 @@ def _row_to_dict(row: SessionState) -> dict:
         "jwt":            row.jwt,
         "account_id":     row.account_id,
         "account_number": row.account_number,
+        "card_number":    row.card_number,
         "balance":        float(row.balance),
         "customer_name":  row.customer_name,
     }
@@ -55,6 +56,7 @@ def create(
     jwt: str,
     account_id: int,
     account_number: str,
+    card_number: str,
     balance: float,
     customer_name: str,
 ) -> str:
@@ -69,6 +71,7 @@ def create(
                 jwt            = jwt,
                 account_id     = account_id,
                 account_number = account_number,
+                card_number    = card_number,
                 balance        = balance,
                 customer_name  = customer_name,
                 last_active    = now,
@@ -81,6 +84,7 @@ def create(
             "jwt":            jwt,
             "account_id":     account_id,
             "account_number": account_number,
+            "card_number":    card_number,   # BUG FIX: was missing from in-memory store
             "balance":        balance,
             "customer_name":  customer_name,
             "last_active":    time.time(),
@@ -111,12 +115,14 @@ def get(token: str) -> dict:
             del _memory[token]
             raise HTTPException(401, "Invalid or expired session. Please log in again.")
         sess["last_active"] = time.time()
+        # BUG FIX: return all fields including card_number, matching the DB path
         return {
             "jwt":            sess["jwt"],
             "account_id":     sess["account_id"],
             "account_number": sess["account_number"],
-            "balance":        sess["balance"],
-            "customer_name":  sess["customer_name"],
+            "card_number":    sess.get("card_number", ""),
+            "balance":        float(sess["balance"]),
+            "customer_name":  sess.get("customer_name", "Customer"),
         }
 
 

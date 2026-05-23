@@ -76,6 +76,9 @@ class SessionState(Base):
     jwt            = Column(String, nullable=False)
     account_id     = Column(Integer, nullable=False)
     account_number = Column(String, nullable=False)
+    # The card used to authenticate this session. Stored for audit/display
+    # purposes only — lockouts are always keyed by account_number, not card_number.
+    card_number    = Column(String, nullable=False)
     balance        = Column(Float, nullable=False)
     customer_name  = Column(String, nullable=False)
 

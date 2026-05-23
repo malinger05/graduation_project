@@ -24,8 +24,7 @@ Intentionally NOT here:
 
 The middleware's own database holds ONLY operational state that the middleware
 itself owns end-to-end (idempotency, sessions, login_lockouts, transaction_logs,
-correlation_logs;
-routing_config still planned). It never duplicates banking data.
+correlation_logs; routing_config still planned). It never duplicates banking data.
 """
 
 import inspect
@@ -129,9 +128,6 @@ async def lifespan(app: FastAPI):
     print(f"[Middleware] Layer 2 started on port 8000")
     print(f"[Middleware] Core Banking: {CORE_BANKING_URL}")
 
-    # Initialize the middleware's own DB (idempotency records, etc.). If
-    # MIDDLEWARE_DB_URL is unset, persistence is skipped and the middleware
-    # runs with the same in-memory-only behaviour it had before.
     try:
         if db.init_db():
             print(f"[Middleware] Operational DB: {db.get_db_url()}")
@@ -151,9 +147,6 @@ async def lifespan(app: FastAPI):
 
     print("[Middleware] Banking data lives in Core Banking; middleware DB holds operational state only.")
 
-    # Spawn the blockchain reconciliation worker (submit-retry / confirm-poll /
-    # tamper-check) ONLY if everything it needs is configured. Otherwise log and
-    # skip — the deposit/withdraw flow still works without it.
     admin = _get_admin_client()
     if admin and CONTRACT_ADDRESS and ETH_PRIVATE_KEY:
         blockchain_worker.start(
@@ -305,7 +298,7 @@ def _get_chain_receipt(tx_hash: str) -> dict | None:
     try:
         receipt = bc["w3"].eth.get_transaction_receipt(tx_hash)
     except Exception:
-        return None  # not yet mined / RPC hiccup
+        return None
     if receipt is None:
         return None
     return {"status": int(receipt.get("status", 0))}
@@ -340,9 +333,6 @@ def _retention_cleanup() -> None:
     days            = config.TRANSACTION_LOG_RETENTION_DAYS
     locked_days     = int(os.environ.get("PERMANENTLY_LOCKED_ACCOUNT_CLEANUP_DAYS", "60"))
 
-    # Obtain an admin JWT once at startup for the Core Banking DELETE calls.
-    # If credentials are missing this is a no-op — locked accounts won't be
-    # auto-closed but all other retention tasks still run.
     _admin_jwt_cache: list[str] = []
 
     def _get_admin_jwt() -> str | None:
@@ -407,10 +397,33 @@ def _cb_post_service(path: str, body: dict):
     return _cb_post(path, body, extra_headers={"X-Service-Token": SERVICE_TOKEN})
 
 
+def _resolve_card_to_account(card_number: str) -> str | None:
+    """
+    Call GET /atm/resolve-card?cardNumber=... on Core Banking.
+
+    Returns the accountNumber string on success, or None if the card is not
+    found / cancelled.  Does NOT raise — callers decide how to handle a missing
+    card (return a generic auth error so as not to leak card validity).
+    """
+    try:
+        resp = requests.get(
+            f"{CORE_BANKING_URL}/atm/resolve-card",
+            params={"cardNumber": card_number},
+            timeout=(3, 10),
+        )
+    except requests.exceptions.ConnectionError:
+        raise HTTPException(503, f"Cannot reach Core Banking at {CORE_BANKING_URL}")
+
+    if resp.status_code == 200:
+        return resp.json().get("accountNumber")
+    # 404 (card not found) or 403 (cancelled) — treat as unknown card
+    return None
+
+
 # ── Request models ────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
-    accountNumber: str
+    cardNumber: str
     pin: str
 
 class AmountRequest(BaseModel):
@@ -421,15 +434,18 @@ class AckRequest(BaseModel):
 
 
 class AccountStatusRequest(BaseModel):
-    accountNumber: str
+    # FIX: Support both cardNumber (from ATM) and accountNumber (from admin panel).
+    # Exactly one must be provided.
+    cardNumber: str | None = None
+    accountNumber: str | None = None
 
 
 class AdminUnlockRequest(BaseModel):
-    accountNumber: str
+    accountNumber: str   # Admin panel unlocks by account number
 
 
 class ResetPinRequest(BaseModel):
-    accountNumber: str
+    cardNumber: str
     newPin: str
     confirmPin: str
 
@@ -451,21 +467,59 @@ def atm_account_status(
     req: AccountStatusRequest,
     x_channel: str | None = Header(None, alias="X-Channel"),
 ):
-    """Lockout / PIN-reset state for an account (no PIN — used after account number entry)."""
+    """
+    Lockout / PIN-reset state for a card or account (no PIN required).
+
+    ATM callers send cardNumber — middleware resolves it to accountNumber first
+    so the lockout counter is always keyed by accountNumber.
+
+    Admin panel callers may send accountNumber directly (they already know it
+    and do not have a card number to pass).
+
+    BUG FIX: The original model only accepted cardNumber. The admin_app was
+    passing accountNumber, which caused the card resolution to fail silently
+    and always return {"status": "ok"} — meaning the lockout state was invisible
+    to the admin panel.
+    """
     started = time.perf_counter()
     channel = _resolve_channel(x_channel)
     corr = correlation.new_correlation_id()
-    req_audit = {"accountNumber": req.accountNumber}
 
-    lockout = lockouts.check(req.accountNumber)
-    if lockout:
-        body = lockout if lockout.get("status") == "pin_reset_required" else {"status": "locked", **lockout}
+    # Resolve to account_number — accept either field.
+    if req.cardNumber:
+        req_audit = {"cardNumber": req.cardNumber}
+        account_number = _resolve_card_to_account(req.cardNumber)
+        if account_number is None:
+            # Unknown or cancelled card — return ok so the ATM shows a generic
+            # error only after PIN entry (avoids leaking which card numbers are valid).
+            body = {"status": "ok", "accountNumber": None}
+            _audit(
+                endpoint="/atm/account-status", http_method="POST", outcome="success",
+                status_code=200, started=started, account_number=None,
+                channel=channel, request_body=req_audit, response_body=body,
+                correlation_id=corr,
+            )
+            return body
+    elif req.accountNumber:
+        req_audit = {"accountNumber": req.accountNumber}
+        account_number = req.accountNumber
     else:
-        body = {"status": "ok", "accountNumber": req.accountNumber}
+        raise HTTPException(400, "Provide either cardNumber or accountNumber.")
+
+    lockout = lockouts.check(account_number)
+
+    # BUG FIX: The old code built {"status": "locked", **lockout} when lockout
+    # already contained a "status" key, creating a duplicate. Now we return the
+    # lockout dict directly (it already has "status") and only add accountNumber
+    # on the success path.
+    if lockout:
+        body = lockout  # lockout dict already contains "status"
+    else:
+        body = {"status": "ok", "accountNumber": account_number}
 
     _audit(
         endpoint="/atm/account-status", http_method="POST", outcome="success",
-        status_code=200, started=started, account_number=req.accountNumber,
+        status_code=200, started=started, account_number=account_number,
         channel=channel, request_body=req_audit, response_body=body,
         correlation_id=corr,
     )
@@ -479,65 +533,83 @@ def atm_login(
 ):
     started = time.perf_counter()
     channel = _resolve_channel(x_channel)
-    req_audit = {"accountNumber": req.accountNumber, "pin": "***REDACTED***"}
+    req_audit = {"cardNumber": req.cardNumber, "pin": "***REDACTED***"}
     corr = correlation.new_correlation_id()
     correlation.log_step(
         corr, "request_received", "middleware", "ok",
-        account_number=req.accountNumber, endpoint="/atm/login",
+        account_number=None, endpoint="/atm/login",
     )
 
-    lockout = lockouts.check(req.accountNumber)
-    if lockout:
-        body = lockout if lockout.get("status") == "pin_reset_required" else {"status": "locked", **lockout}
-        step_msg = "pin reset required" if body.get("status") == "pin_reset_required" else "account locked"
-        correlation.log_step(
-            corr, "lockout_check", "middleware", "skipped",
-            account_number=req.accountNumber, endpoint="/atm/login",
-            message=step_msg,
-        )
-        _audit(
-            endpoint="/atm/login", http_method="POST", outcome="success",
-            status_code=200, started=started, account_number=req.accountNumber,
-            channel=channel, request_body=req_audit, response_body=body,
-            correlation_id=corr,
-        )
-        return body
+    # ── Step 1: resolve card number → account number ──────────────────────────
+    account_number = _resolve_card_to_account(req.cardNumber)
+
+    # ── Step 2: lockout check (keyed by accountNumber) ────────────────────────
+    if account_number is not None:
+        lockout = lockouts.check(account_number)
+        if lockout:
+            # lockout dict already contains "status" — return it directly
+            body = lockout
+            step_msg = "pin reset required" if body.get("status") == "pin_reset_required" else "account locked"
+            correlation.log_step(
+                corr, "lockout_check", "middleware", "skipped",
+                account_number=account_number, endpoint="/atm/login",
+                message=step_msg,
+            )
+            _audit(
+                endpoint="/atm/login", http_method="POST", outcome="success",
+                status_code=200, started=started, account_number=account_number,
+                channel=channel, request_body=req_audit, response_body=body,
+                correlation_id=corr,
+            )
+            return body
 
     correlation.log_step(
         corr, "core_banking_request", "core_banking", "ok",
-        account_number=req.accountNumber, endpoint="/atm/login",
+        account_number=account_number, endpoint="/atm/login",
     )
-    resp = _cb_post("/atm/login", {"accountNumber": req.accountNumber, "pin": req.pin})
+
+    # ── Step 3: forward to Core Banking ──────────────────────────────────────
+    resp = _cb_post("/atm/login", {"cardNumber": req.cardNumber, "pin": req.pin})
 
     if resp.status_code == 401:
-        try:
-            result = lockouts.record_failure(req.accountNumber)
-        except Exception as e:
-            print(f"[Lockouts] record_failure failed for {req.accountNumber}: {e}")
-            raise HTTPException(500, f"Lockout state error: {e}") from e
+        # Wrong PIN — record failure against accountNumber if we have it.
+        if account_number is not None:
+            try:
+                result = lockouts.record_failure(account_number)
+            except Exception as e:
+                print(f"[Lockouts] record_failure failed for account {account_number}: {e}")
+                raise HTTPException(500, f"Lockout state error: {e}") from e
+        else:
+            result = {"status": "invalid", "attempts_to_next_lock": 3}
         correlation.log_step(
             corr, "core_banking_response", "core_banking", "error",
-            account_number=req.accountNumber, endpoint="/atm/login",
+            account_number=account_number, endpoint="/atm/login",
             message="invalid credentials",
         )
         _audit(
             endpoint="/atm/login", http_method="POST", outcome="success",
-            status_code=200, started=started, account_number=req.accountNumber,
+            status_code=200, started=started, account_number=account_number,
             channel=channel, request_body=req_audit, response_body=result,
             correlation_id=corr,
         )
         return result
 
     if resp.status_code == 403:
-        body = {"status": "locked", "remaining_lock_seconds": 0, "lock_minutes": 0}
+        # BUG FIX: Pass the actual error from Core Banking (BLOCKED/EXPIRED/CANCELLED/
+        # account not ACTIVE) rather than a hardcoded locked response with zeros.
+        try:
+            cb_detail = resp.json().get("error", "Card or account is not accessible.")
+        except Exception:
+            cb_detail = resp.text or "Card or account is not accessible."
+        body = {"status": "locked", "message": cb_detail, "remaining_lock_seconds": 0, "lock_minutes": 0}
         correlation.log_step(
             corr, "core_banking_response", "core_banking", "error",
-            account_number=req.accountNumber, endpoint="/atm/login",
-            message="account locked by core banking",
+            account_number=account_number, endpoint="/atm/login",
+            message=cb_detail,
         )
         _audit(
             endpoint="/atm/login", http_method="POST", outcome="success",
-            status_code=200, started=started, account_number=req.accountNumber,
+            status_code=200, started=started, account_number=account_number,
             channel=channel, request_body=req_audit, response_body=body,
             correlation_id=corr,
         )
@@ -546,22 +618,28 @@ def atm_login(
     if not resp.ok:
         correlation.log_step(
             corr, "core_banking_response", "core_banking", "error",
-            account_number=req.accountNumber, endpoint="/atm/login",
+            account_number=account_number, endpoint="/atm/login",
             message=resp.text, detail={"status_code": resp.status_code},
         )
         raise HTTPException(502, f"Core Banking error: {resp.text}")
 
+    # ── Step 4: successful login ──────────────────────────────────────────────
     data = resp.json()
+    account_number = data["accountNumber"]
+
     correlation.log_step(
         corr, "core_banking_response", "core_banking", "ok",
-        account_number=req.accountNumber, endpoint="/atm/login",
+        account_number=account_number, endpoint="/atm/login",
     )
-    lockouts.reset(req.accountNumber)
+
+    # Clear lockout counter keyed by accountNumber.
+    lockouts.reset(account_number)
 
     session_token = sessions.create(
         jwt=data["token"],
         account_id=int(data["accountId"]),
-        account_number=req.accountNumber,
+        account_number=account_number,
+        card_number=req.cardNumber,
         balance=float(data.get("balance", 0)),
         customer_name=data.get("customerName", "Customer"),
     )
@@ -570,10 +648,11 @@ def atm_login(
         "status":        "ok",
         "sessionToken":  session_token,
         "customerName":  data.get("customerName", "Customer"),
-        "accountNumber": req.accountNumber,
+        "cardNumber":    req.cardNumber,
+        "accountNumber": account_number,
         "balance":       float(data.get("balance", 0)),
         "account": {
-            "account_id": req.accountNumber,
+            "account_id": account_number,
             "name":       data.get("customerName", "Customer"),
             "balance":    float(data.get("balance", 0)),
         },
@@ -581,11 +660,11 @@ def atm_login(
     safe_body = {**body, "sessionToken": "***REDACTED***"}
     correlation.log_step(
         corr, "session_create", "middleware", "ok",
-        account_number=req.accountNumber, endpoint="/atm/login",
+        account_number=account_number, endpoint="/atm/login",
     )
     _audit(
         endpoint="/atm/login", http_method="POST", outcome="success",
-        status_code=200, started=started, account_number=req.accountNumber,
+        status_code=200, started=started, account_number=account_number,
         channel=channel, request_body=req_audit, response_body=safe_body,
         correlation_id=corr,
     )
@@ -618,32 +697,37 @@ def atm_reset_pin(
     channel = _resolve_channel(x_channel)
     corr = correlation.new_correlation_id()
     req_audit = {
-        "accountNumber": req.accountNumber,
-        "newPin":        "***REDACTED***",
-        "confirmPin":    "***REDACTED***",
+        "cardNumber": req.cardNumber,
+        "newPin":     "***REDACTED***",
+        "confirmPin": "***REDACTED***",
     }
 
     if req.newPin != req.confirmPin:
         body = {"status": "error", "message": "PINs do not match."}
         _audit(
             endpoint="/atm/reset-pin", http_method="POST", outcome="error",
-            status_code=200, started=started, account_number=req.accountNumber,
+            status_code=200, started=started, account_number=req.cardNumber,
             channel=channel, request_body=req_audit, response_body=body,
             correlation_id=corr,
         )
         return body
 
-    if len(req.newPin) < 4 or len(req.newPin) > 8 or not req.newPin.isdigit():
-        body = {"status": "error", "message": "PIN must be 4–8 digits."}
+    if len(req.newPin) != 4 or not req.newPin.isdigit():
+        body = {"status": "error", "message": "PIN must be exactly 4 digits."}
         _audit(
             endpoint="/atm/reset-pin", http_method="POST", outcome="error",
-            status_code=200, started=started, account_number=req.accountNumber,
+            status_code=200, started=started, account_number=req.cardNumber,
             channel=channel, request_body=req_audit, response_body=body,
             correlation_id=corr,
         )
         return body
 
-    if not lockouts.requires_pin_reset(req.accountNumber):
+    # Resolve card → account number so we check/clear the lockout by accountNumber.
+    account_number = _resolve_card_to_account(req.cardNumber)
+    if account_number is None:
+        raise HTTPException(404, "Card not found.")
+
+    if not lockouts.requires_pin_reset(account_number):
         raise HTTPException(
             403,
             "PIN reset is not required for this account. Contact the bank if you need help.",
@@ -651,7 +735,7 @@ def atm_reset_pin(
 
     resp = _cb_post_service(
         "/atm/reset-pin",
-        {"accountNumber": req.accountNumber, "pin": req.newPin},
+        {"cardNumber": req.cardNumber, "pin": req.newPin},
     )
     if not resp.ok:
         try:
@@ -661,20 +745,20 @@ def atm_reset_pin(
         body = {"status": "error", "message": err_msg}
         _audit(
             endpoint="/atm/reset-pin", http_method="POST", outcome="error",
-            status_code=200, started=started, account_number=req.accountNumber,
+            status_code=200, started=started, account_number=account_number,
             channel=channel, request_body=req_audit, response_body=body,
             correlation_id=corr,
         )
         return body
 
-    lockouts.complete_pin_reset(req.accountNumber)
+    lockouts.complete_pin_reset(account_number)
     body = {
         "status":  "ok",
         "message": "PIN updated. Please log in with your new PIN.",
     }
     _audit(
         endpoint="/atm/reset-pin", http_method="POST", outcome="success",
-        status_code=200, started=started, account_number=req.accountNumber,
+        status_code=200, started=started, account_number=account_number,
         channel=channel, request_body=req_audit, response_body=body,
         correlation_id=corr,
     )
@@ -847,7 +931,6 @@ def atm_deposit(
         account_number=account_number, endpoint="/atm/deposit",
     )
 
-    # 1. Forward to Core Banking — it validates, updates balance, saves transaction
     correlation.log_step(
         corr, "core_banking_request", "core_banking", "ok",
         account_number=account_number, endpoint="/atm/deposit",
@@ -862,7 +945,6 @@ def atm_deposit(
         )
         raise HTTPException(resp.status_code, resp.text)
 
-    # 2. Read authoritative result — Core Banking did all the math
     result      = resp.json()
     tx_id       = int(result["transactionId"])
     new_balance = float(result.get("balanceAfter", 0))
@@ -875,7 +957,6 @@ def atm_deposit(
         detail={"transaction_id": tx_id, "balance_after": new_balance},
     )
 
-    # 3. Hash confirmed data, log to chain, persist hash+tx into Core Banking
     c_hash, bc_tx = _hash_and_persist(
         transaction_id=tx_id,
         account_number=account_number,
@@ -900,8 +981,6 @@ def atm_deposit(
         "message":       "" if bc_tx else "Blockchain sync unavailable — worker will retry.",
     }
 
-    # 4. Cache the response so a retry of the same Idempotency-Key returns
-    #    the exact same payload without re-charging the account.
     idempotency.finish(idempotency_key, account_number, response)
     correlation.log_step(
         corr, "idempotency_finish", "middleware", "ok",
@@ -962,7 +1041,6 @@ def atm_withdraw(
         account_number=account_number, endpoint="/atm/withdraw",
     )
 
-    # 1. Forward to Core Banking — it validates funds, subtracts balance, saves transaction
     correlation.log_step(
         corr, "core_banking_request", "core_banking", "ok",
         account_number=account_number, endpoint="/atm/withdraw",
@@ -989,7 +1067,6 @@ def atm_withdraw(
         )
         raise HTTPException(resp.status_code, resp.text)
 
-    # 2. Read authoritative result — Core Banking did all the math
     result      = resp.json()
     tx_id       = int(result["transactionId"])
     new_balance = float(result.get("balanceAfter", 0))
@@ -1002,7 +1079,6 @@ def atm_withdraw(
         detail={"transaction_id": tx_id, "balance_after": new_balance},
     )
 
-    # 3. Hash confirmed data, log to chain, persist hash+tx into Core Banking
     c_hash, bc_tx = _hash_and_persist(
         transaction_id=tx_id,
         account_number=account_number,
@@ -1014,8 +1090,6 @@ def atm_withdraw(
         correlation_id=corr,
     )
 
-    # 4. Core Banking owns dispense state (PENDING_DISPENSE until /confirm-dispense
-    #    or scheduler reversal). middlewareTxId is the Core Banking transaction id.
     response = {
         "middlewareTxId": tx_id,
         "transactionId":  tx_id,
@@ -1030,8 +1104,6 @@ def atm_withdraw(
         "message":        "Dispense cash now, then call /atm/ack",
     }
 
-    # 5. Cache the response — retries with the same Idempotency-Key get the
-    #    same middlewareTxId / transactionId without a second debit.
     idempotency.finish(idempotency_key, account_number, response)
     correlation.log_step(
         corr, "idempotency_finish", "middleware", "ok",
@@ -1182,6 +1254,7 @@ def atm_tx_status(
         return body
     except requests.exceptions.ConnectionError:
         raise HTTPException(503, "Cannot reach Core Banking")
+
 
 if __name__ == "__main__":
     import uvicorn

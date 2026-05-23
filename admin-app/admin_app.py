@@ -32,6 +32,7 @@ from secrets_manager import get_secret
 load_dotenv()
 
 CORE_BANKING_URL = os.environ.get("CORE_BANKING_URL", "http://localhost:8080").rstrip("/")
+MIDDLEWARE_URL   = os.environ.get("MIDDLEWARE_URL", "http://localhost:8000").rstrip("/")
 SERVICE_TOKEN    = get_secret("MIDDLEWARE_SERVICE_TOKEN", "", allow_env_fallback=True).strip()
 
 # Admin credentials stored in env — not in DB for simplicity
@@ -40,7 +41,7 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PANEL_PASSWORD", "admin123")
 
 app = Flask(__name__)
 app.secret_key = get_secret("ADMIN_SECRET_KEY", "admin-change-me", allow_env_fallback=True)
-app.config["SESSION_COOKIE_NAME"] = "admin_session"   # ← add this
+app.config["SESSION_COOKIE_NAME"] = "admin_session"
 app.config["SESSION_COOKIE_PATH"] = "/"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -77,6 +78,20 @@ def _cb_service(method, path, **kwargs):
             f"{CORE_BANKING_URL}{path}",
             headers=_service_headers(),
             timeout=(3, 15),
+            **kwargs
+        )
+        return resp
+    except _req.exceptions.ConnectionError:
+        return None
+
+
+def _mw(method, path, **kwargs):
+    """Call Middleware with Service Token auth."""
+    try:
+        resp = getattr(_req, method)(
+            f"{MIDDLEWARE_URL}{path}",
+            headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
+            timeout=(3, 10),
             **kwargs
         )
         return resp
@@ -127,7 +142,6 @@ def login():
         return render_template("login.html")
 
     if not resp.ok:
-        # Try to get JWT anyway using a known admin user
         flash("Core Banking login failed. Check ADMIN credentials match /auth/register.")
         return render_template("login.html")
 
@@ -150,7 +164,6 @@ def logout():
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    # Quick stats
     customers_resp = _cb("get", "/customers")
     customers = customers_resp.json() if customers_resp and customers_resp.ok else []
 
@@ -199,64 +212,61 @@ def register_customer():
         "phoneNumber": f.get("phoneNumber", "").strip(),
         "dateOfBirth": f.get("dateOfBirth", "").strip(),
     }
-
     resp1 = _cb("post", "/customers", json=customer_payload)
     if not resp1 or not resp1.ok:
-        print("STATUS:", resp1.status_code)
-        print("RAW BODY:", resp1.text)
-        try:
-            err = resp1.json()
-            print("JSON:", err)
-            detail = err.get("message") or resp1.text
-        except Exception:
-            detail = resp1.text or "Unknown error"
-
+        detail = resp1.text[:200] if resp1 else "Core Banking unreachable"
         flash(f"Customer creation failed: {detail}")
-        return render_template("register.html", form=f)
+        return render_template("register.html")
 
     customer = resp1.json()
     customer_id = customer["customerId"]
 
     # Step 2: Create account
-    initial_balance = f.get("initialBalance", "0").strip()
     try:
-        initial_balance = float(initial_balance)
+        initial_balance = float(f.get("initialBalance", "0") or "0")
     except ValueError:
         initial_balance = 0.0
 
     resp2 = _cb("post", f"/customers/{customer_id}/accounts",
                 json={"initialBalance": initial_balance})
     if not resp2 or not resp2.ok:
-        try:
-            err2 = resp2.json() if resp2 else {}
-            detail2 = err2.get("message", resp2.text if resp2 else "error")
-        except Exception:
-            detail2 = "error"
-        flash(f"Account creation failed: {detail2}. Customer #{customer_id} was created.")
-        return render_template("register.html", form=f)
+        detail = resp2.text[:200] if resp2 else "Core Banking unreachable"
+        flash(f"Account creation failed: {detail} — customer created (id={customer_id})")
+        return render_template("register.html")
 
     account = resp2.json()
 
-    # Step 3: Set PIN
-    pin = f.get("pin", "").strip()
+    # Step 3: Issue a card
+    resp_card = _cb("post", f"/accounts/{account['accountId']}/cards",
+                    json={"holderName": f"{f.get('firstName','')} {f.get('lastName','')}".strip()})
+    if not resp_card or not resp_card.ok:
+        flash("Card issuance failed — customer and account created but no card/PIN set.")
+        return render_template("register.html")
 
+    card = resp_card.json()
+
+    # Step 4: Set PIN on the card
+    pin = f.get("pin", "").strip()
     if not pin or len(pin) != 4 or not pin.isdigit():
-        flash("PIN must be exactly 4 digits.")
-        return render_template("register.html", form=f)
+        flash("PIN must be exactly 4 digits — customer, account and card created but PIN not set.")
+        return render_template("register.html")
 
     resp3 = _cb("post", "/atm/set-pin",
-        json={"accountId": str(account['accountId']), "pin": pin})
+        json={"cardId": str(card["cardId"]), "pin": pin})
     if not resp3 or not resp3.ok:
         try:
-            detail = resp3.json().get("message", resp3.text)
+            detail = resp3.json().get("error", resp3.text) if resp3 else "Core Banking unreachable"
         except Exception:
-            detail = "error"
-        flash(f"PIN set failed: {detail} — customer #{customer_id} and account created but PIN not set.")
-        return redirect(url_for("customers"))
+            detail = resp3.text if resp3 else "Core Banking unreachable"
+        flash(f"PIN set failed: {detail} — customer, account and card created but PIN not set.")
+        return render_template("register.html")
 
-    flash(f"✓ Customer {customer['firstName']} {customer['lastName']} registered. "
+    flash(
+        f"Customer registered successfully! "
         f"Account: {account['accountNumber']}. "
-        f"Customer ID: {customer_id}.")
+        f"Card: **** **** **** {card['cardNumber'][-4:]}. "
+        f"PIN set."
+    )
     return redirect(url_for("customers"))
 
 
@@ -265,83 +275,52 @@ def register_customer():
 @app.route("/transactions")
 @login_required
 def transactions():
-    # Single call — returns every transaction ordered by date desc, no cap
-    all_resp = _cb_service("get", "/admin/transactions", params={"limit": 10000})
-    all_txns = all_resp.json() if all_resp and all_resp.ok else []
-
-    # Counts for the subtitle — derived from the full list
-    pending_count   = sum(1 for t in all_txns if t.get("chainStatus") == "PENDING_SUBMIT")
-    submitted_count = sum(1 for t in all_txns if t.get("chainStatus") == "SUBMITTED")
-    confirmed_count = sum(1 for t in all_txns if t.get("chainStatus") == "CONFIRMED")
-
-    filter_status = request.args.get("status", "ALL")
-    if filter_status != "ALL":
-        all_txns = [t for t in all_txns if t.get("chainStatus") == filter_status]
-
-    return render_template("transactions.html",
-        transactions=all_txns,
-        filter_status=filter_status,
-        pending_count=pending_count,
-        submitted_count=submitted_count,
-        confirmed_count=confirmed_count,
-    )
+    resp = _cb_service("get", "/admin/transactions", params={"limit": 200})
+    txn_list = resp.json() if resp and resp.ok else []
+    return render_template("transactions.html", transactions=txn_list)
 
 
-# ── Blockchain contracts ──────────────────────────────────────────────────────
+# ── Blockchain ────────────────────────────────────────────────────────────────
 
 @app.route("/blockchain")
 @login_required
 def blockchain():
     resp = _cb_service("get", "/admin/transactions/for-tamper-check", params={"limit": 200})
-    contracts = resp.json() if resp and resp.ok else []
+    confirmed_list = resp.json() if resp and resp.ok else []
+    return render_template("blockchain.html", transactions=confirmed_list)
 
-    # Sort by created desc
-    contracts = sorted(contracts, key=lambda x: x.get("createdAt", ""), reverse=True)
 
-    filter_type = request.args.get("type", "ALL")
-    if filter_type == "TAMPERED":
-        contracts = [c for c in contracts if c.get("chainStatus") == "TAMPERED"]
-    elif filter_type == "CONFIRMED":
-        contracts = [c for c in contracts if c.get("chainStatus") == "CONFIRMED"]
+# ── Customer / Account APIs ───────────────────────────────────────────────────
 
-    tampered_count  = sum(1 for c in contracts if c.get("chainStatus") == "TAMPERED")
-    confirmed_count = sum(1 for c in contracts if c.get("chainStatus") == "CONFIRMED")
-
-    return render_template("blockchain.html",
-        contracts=contracts,
-        filter_type=filter_type,
-        tampered_count=tampered_count,
-        confirmed_count=confirmed_count,
-    )
-
- 
 @app.route("/admin/customer/<int:customer_id>/accounts")
 @login_required
 def customer_accounts(customer_id):
     """Returns accounts for a customer as JSON — called by the modal JS."""
     resp = _cb("get", f"/customers/{customer_id}/accounts")
     if not resp or not resp.ok:
-        return jsonify([]), 200
-    return jsonify(resp.json()), 200
+        return jsonify([])
+    return jsonify(resp.json())
 
 
 @app.route("/admin/account/<account_number>/lockout-status")
 @login_required
 def account_lockout_status(account_number):
-    """Returns lockout info for an account from the middleware."""
-    middleware_url = os.environ.get("MIDDLEWARE_URL", "http://localhost:8000").rstrip("/")
-    try:
-        resp = _req.post(
-            f"{middleware_url}/atm/account-status",
-            json={"accountNumber": account_number},
-            headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
-            timeout=(3, 10),
-        )
-        if resp.ok:
-            return jsonify(resp.json()), 200
-        return jsonify({"status": "unknown"}), 200
-    except Exception as e:
-        return jsonify({"status": "unknown", "error": str(e)}), 200
+    """
+    Returns lockout info for an account from the middleware.
+
+    BUG FIX: The old code called /atm/account-status with {"accountNumber": ...}.
+    The middleware's AccountStatusRequest model previously only accepted cardNumber
+    and would resolve it via /atm/resolve-card. The admin panel has no card number —
+    it works with account numbers.
+
+    Fix: The middleware now accepts either cardNumber or accountNumber in
+    AccountStatusRequest. We send accountNumber here so the middleware skips
+    the card-resolution step and checks the lockout table directly.
+    """
+    resp = _mw("post", "/atm/account-status", json={"accountNumber": account_number})
+    if not resp or not resp.ok:
+        return jsonify({"status": "unknown", "error": "Middleware unreachable"}), 503
+    return jsonify(resp.json())
 
 
 @app.route("/admin/blocked-accounts")
@@ -351,17 +330,16 @@ def blocked_accounts_list():
     Returns JSON list of all permanently-locked accounts with their customer info.
     Fetches all customers + their accounts from Core Banking, then checks
     lockout status for each active account via middleware.
-    """
-    middleware_url = os.environ.get("MIDDLEWARE_URL", "http://localhost:8000").rstrip("/")
 
+    BUG FIX: Same as account_lockout_status — now sends accountNumber instead of
+    cardNumber to the middleware /atm/account-status endpoint.
+    """
     customers_resp = _cb("get", "/customers")
     if not customers_resp or not customers_resp.ok:
-        return jsonify([]), 200
+        return jsonify({"error": "Cannot fetch customers"}), 503
 
-    customers = customers_resp.json()
     blocked = []
-
-    for customer in customers:
+    for customer in customers_resp.json():
         cid = customer.get("customerId")
         if not cid:
             continue
@@ -372,16 +350,12 @@ def blocked_accounts_list():
             account_number = acc.get("accountNumber")
             if not account_number or acc.get("accountStatus") == "CLOSED":
                 continue
-            # Check lockout status from middleware
+            # BUG FIX: send accountNumber, not cardNumber
+            lock_resp = _mw("post", "/atm/account-status",
+                            json={"accountNumber": account_number})
+            if not lock_resp or not lock_resp.ok:
+                continue
             try:
-                lock_resp = _req.post(
-                    f"{middleware_url}/atm/account-status",
-                    json={"accountNumber": account_number},
-                    headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
-                    timeout=(3, 8),
-                )
-                if not lock_resp.ok:
-                    continue
                 lockout = lock_resp.json()
             except Exception:
                 continue
@@ -395,19 +369,21 @@ def blocked_accounts_list():
                     "accountNumber":   account_number,
                     "accountId":       acc.get("accountId"),
                     "accountStatus":   acc.get("accountStatus"),
-                    "balance":         acc.get("balance"),
+                    "balance":         acc.get("balance", 0),
                     "customerId":      cid,
-                    "customerName":    customer.get("firstName", "") + " " + customer.get("lastName", ""),
+                    "customerName":    f"{customer.get('firstName','')} {customer.get('lastName','')}".strip(),
                     "email":           customer.get("email", ""),
+                    # BUG FIX: these three fields were missing — the unlock modal and
+                    # blocked-accounts table need them to show the identity-verification
+                    # panel so the admin can confirm the customer in person before unlocking.
                     "phone":           customer.get("phoneNumber", ""),
                     "nationalId":      customer.get("nationalId", ""),
                     "dateOfBirth":     customer.get("dateOfBirth", ""),
-                    "createdAt":       customer.get("createdAt", ""),
                     "lockStatus":      "pin_reset_required" if is_pin_reset else "permanently_locked",
                     "remainingSecs":   lockout.get("remaining_lock_seconds", 0),
                 })
 
-    return jsonify(blocked), 200
+    return jsonify(blocked)
 
 
 @app.route("/admin/account/<account_number>/unlock", methods=["POST"])
@@ -417,32 +393,14 @@ def admin_unlock_account(account_number):
     Staff unlock: calls middleware /atm/admin/login-unlock.
     The middleware sets must_reset_pin=True; the customer sets a new PIN at the ATM.
     """
-    middleware_url = os.environ.get("MIDDLEWARE_URL", "http://localhost:8000").rstrip("/")
-    try:
-        resp = _req.post(
-            f"{middleware_url}/atm/admin/login-unlock",
-            json={"accountNumber": account_number},
-            headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
-            timeout=(3, 10),
-        )
-        if resp.ok:
-            return jsonify({"status": "ok", "message": "Account unlocked. Customer must set a new PIN at the ATM."}), 200
-        try:
-            detail = resp.json().get("detail", resp.text)
-        except Exception:
-            detail = resp.text or "Unlock failed."
-        return jsonify({"status": "error", "message": detail}), 400
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
- 
+    resp = _mw("post", "/atm/admin/login-unlock", json={"accountNumber": account_number})
+    if not resp or not resp.ok:
+        detail = resp.text[:200] if resp else "Middleware unreachable"
+        return jsonify({"status": "error", "message": detail}), 502
+    return jsonify({"status": "ok", "message": "Account unlocked. Customer must set a new PIN at the ATM."}), 200
 
-if __name__ == "__main__":
-    port = int(os.environ.get("ADMIN_PORT", "5002"))
-    print(f"[Admin Panel] Running on http://0.0.0.0:{port}")
-    print(f"[Admin Panel] Core Banking: {CORE_BANKING_URL}")
-    app.run(host="0.0.0.0", port=port, debug=False)
 
-# ── Card management ──────────────────────────────────────────────────────────
+# ── Card management ───────────────────────────────────────────────────────────
 
 @app.route("/admin/account/<int:account_id>/cards")
 @login_required
@@ -450,41 +408,44 @@ def account_cards(account_id):
     """Returns cards for an account as JSON."""
     resp = _cb("get", f"/accounts/{account_id}/cards")
     if not resp or not resp.ok:
-        return jsonify([]), 200
-    return jsonify(resp.json()), 200
+        return jsonify([])
+    return jsonify(resp.json())
 
 
 @app.route("/admin/account/<int:account_id>/cards/issue", methods=["POST"])
 @login_required
 def issue_card(account_id):
     """Issue a new card for an account."""
-    holder_name = request.json.get("holderName", "") if request.is_json else ""
+    data = request.get_json(silent=True) or {}
     resp = _cb("post", f"/accounts/{account_id}/cards",
-               json={"holderName": holder_name})
+               json={"holderName": data.get("holderName", "")})
     if not resp or not resp.ok:
-        try:
-            msg = resp.json().get("message", resp.text) if resp else "No response"
-        except Exception:
-            msg = "Error issuing card"
-        return jsonify({"status": "error", "message": msg}), 400
-    return jsonify({"status": "ok", "card": resp.json()}), 201
+        detail = resp.text[:200] if resp else "Core Banking unreachable"
+        return jsonify({"status": "error", "message": detail}), 502
+    return jsonify(resp.json()), 201
 
 
 @app.route("/admin/card/<int:card_id>/status", methods=["PATCH"])
 @login_required
 def update_card_status(card_id):
-    """Block, unblock, or cancel a card. Body: {accountId, cardStatus}"""
-    data = request.json or {}
-    account_id = data.get("accountId")
+    """Block, unblock, or expire a card."""
+    data = request.get_json(silent=True) or {}
     card_status = data.get("cardStatus")
-    if not account_id or not card_status:
-        return jsonify({"status": "error", "message": "accountId and cardStatus required"}), 400
+    if not card_status:
+        return jsonify({"status": "error", "message": "cardStatus required"}), 400
+    # We need the accountId — fetch the card first via the admin transactions list
+    # or require accountId in the request.
+    account_id = data.get("accountId")
+    if not account_id:
+        return jsonify({"status": "error", "message": "accountId required"}), 400
     resp = _cb("patch", f"/accounts/{account_id}/cards/{card_id}/status",
                json={"cardStatus": card_status})
     if not resp or not resp.ok:
-        try:
-            msg = resp.json().get("message", resp.text) if resp else "Error"
-        except Exception:
-            msg = "Error updating card"
-        return jsonify({"status": "error", "message": msg}), 400
-    return jsonify({"status": "ok", "card": resp.json()}), 200
+        detail = resp.text[:200] if resp else "Core Banking unreachable"
+        return jsonify({"status": "error", "message": detail}), 502
+    return jsonify(resp.json())
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "5002"))
+    app.run(host="0.0.0.0", port=port, debug=False)

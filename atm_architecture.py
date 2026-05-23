@@ -55,12 +55,15 @@ class MiddlewareClient:
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
-    def check_account_status(self, account_number: str) -> dict:
-        """POST /atm/account-status — lockout / PIN-reset state without a PIN."""
+    def check_account_status(self, card_number: str) -> dict:
+        """POST /atm/account-status — lockout / PIN-reset state without a PIN.
+        Middleware resolves card_number → account_number internally before
+        checking lockout state, so the lockout is always keyed by accountNumber.
+        """
         try:
             resp = requests.post(
                 f"{self.base_url}/atm/account-status",
-                json={"accountNumber": account_number},
+                json={"cardNumber": card_number},   # middleware expects cardNumber
                 headers={"X-Channel": "ATM_WEB"},
                 timeout=10,
             )
@@ -76,16 +79,17 @@ class MiddlewareClient:
                 f"Middleware returned non-JSON (HTTP {resp.status_code}): {resp.text[:200]}"
             )
 
-    def authenticate_with_status(self, account_number: str, pin: str) -> dict:
+    def authenticate_with_status(self, card_number: str, pin: str) -> dict:
         """
         POST /atm/login → middleware → Spring Boot /atm/login.
-        Spring Boot verifies BCrypt PIN and returns a JWT.
+        Spring Boot verifies BCrypt PIN via card number and returns a JWT.
         Middleware creates a session token and returns it to ATM.
+        Lockouts are keyed by accountNumber (resolved inside middleware).
         """
         try:
             resp = requests.post(
                 f"{self.base_url}/atm/login",
-                json={"accountNumber": account_number, "pin": pin},
+                json={"cardNumber": card_number, "pin": pin},   # middleware expects cardNumber
                 headers={"X-Channel": "ATM_WEB"},
                 timeout=10,
             )
@@ -106,7 +110,7 @@ class MiddlewareClient:
         if status == "pin_reset_required":
             return {
                 "status": "pin_reset_required",
-                "accountNumber": data.get("accountNumber", account_number),
+                "accountNumber": data.get("accountNumber", ""),
             }
 
         if status == "locked":
@@ -127,32 +131,33 @@ class MiddlewareClient:
 
         self._session_token = data["sessionToken"]
         self._customer_name = data.get("customerName", "Customer")
-        self._account_number = account_number
+        self._account_number = data.get("accountNumber", card_number)
         self._cached_balance = float(data.get("balance", 0))
 
         return {
             "status": "ok",
+            "accountNumber": self._account_number,
             "account": {
-                "account_id": account_number,
+                "account_id": self._account_number,
                 "name": self._customer_name,
                 "balance": self._cached_balance,
             },
         }
 
-    def authenticate(self, account_number: str, pin: str):
-        result = self.authenticate_with_status(account_number, pin)
+    def authenticate(self, card_number: str, pin: str):
+        result = self.authenticate_with_status(card_number, pin)
         if result.get("status") != "ok":
             return None
         return result.get("account")
 
-    def reset_pin(self, account_number: str, new_pin: str, confirm_pin: str) -> dict:
+    def reset_pin(self, card_number: str, new_pin: str, confirm_pin: str) -> dict:
         """POST /atm/reset-pin — customer sets new PIN after admin unlock."""
         try:
             resp = requests.post(
                 f"{self.base_url}/atm/reset-pin",
                 json={
-                    "accountNumber": account_number,
-                    "newPin": new_pin,
+                    "cardNumber": card_number,   # middleware expects cardNumber
+                    "newPin":     new_pin,
                     "confirmPin": confirm_pin,
                 },
                 headers={"X-Channel": "ATM_WEB"},
@@ -300,22 +305,23 @@ class AccountsRepository:
     """
     Wraps MiddlewareClient with the same method signatures that
     customer_app.py expects from the original local AccountsRepository.
+    Parameter names updated to card_number to match the new card-based login flow.
     """
 
     def __init__(self, middleware_url: str):
         self._client = MiddlewareClient(middleware_url)
 
-    def check_account_status(self, account_number: str) -> dict:
-        return self._client.check_account_status(account_number)
+    def check_account_status(self, card_number: str) -> dict:
+        return self._client.check_account_status(card_number)
 
-    def authenticate_with_status(self, account_number: str, pin: str) -> dict:
-        return self._client.authenticate_with_status(account_number, pin)
+    def authenticate_with_status(self, card_number: str, pin: str) -> dict:
+        return self._client.authenticate_with_status(card_number, pin)
 
-    def authenticate(self, account_number: str, pin: str):
-        return self._client.authenticate(account_number, pin)
+    def authenticate(self, card_number: str, pin: str):
+        return self._client.authenticate(card_number, pin)
 
-    def reset_pin(self, account_number: str, new_pin: str, confirm_pin: str) -> dict:
-        return self._client.reset_pin(account_number, new_pin, confirm_pin)
+    def reset_pin(self, card_number: str, new_pin: str, confirm_pin: str) -> dict:
+        return self._client.reset_pin(card_number, new_pin, confirm_pin)
 
     def get_balance(self, account_id: str) -> float:
         return self._client.get_balance()
@@ -374,8 +380,8 @@ class ATMApp:
         self.transactions_repo = transactions_repo
         self.current_account = None
 
-    def authenticate(self, account_id: str, pin: str) -> bool:
-        account = self.accounts_repo.authenticate(account_id, pin)
+    def authenticate(self, card_number: str, pin: str) -> bool:
+        account = self.accounts_repo.authenticate(card_number, pin)
         if not account:
             return False
         self.current_account = account["account_id"]
