@@ -1,0 +1,46 @@
+@startuml login_lockout_progressive
+title Progressive lockout (default: 3 failures per window, 9 total)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+
+skinparam state {
+  BackgroundColor #FAFAFA
+  BorderColor #444444
+}
+
+[*] --> NoRow : No row / failed_attempts = 0
+
+NoRow --> Failing : Wrong PIN\nrecord_failure()
+
+Failing --> Failing : Wrong PIN\n(1st or 2nd in group of 3)
+
+Failing --> Locked15 : 3rd failure (tier 0)\nlocked_until = now + 15 min
+
+Locked15 --> NoRow : Lock expires\nor cleanup_expired()\nor successful login reset()
+
+Locked15 --> Failing : Wrong PIN after unlock\n(counter continues)
+
+Failing --> Locked30 : 6th failure (tier 1)\nlocked_until = now + 30 min
+
+Locked30 --> NoRow : Expired / reset
+
+Failing --> PermLocked : 9th failure\npermanently_locked = true
+
+PermLocked --> MustResetPin : admin_unlock()\nmust_reset_pin = true
+
+MustResetPin --> NoRow : POST /atm/reset-pin\ncomplete_pin_reset()
+
+note right of Locked30
+  **LOCKOUT_MAX_ATTEMPTS** = 3
+  **LOCKOUT_MINUTES** = [15, 30]
+  2 timed tiers, then permanent lock
+end note
+
+note right of MustResetPin
+  See **Figure 17** (sequence)
+  and **Figure 18** (recovery states).
+end note
+
+@enduml

@@ -87,7 +87,7 @@ class LoginLockout(Base):
     """
     Failed login attempts and progressive lockout per account.
 
-    lock_tier counts completed timed lock cycles (5 → 10 → 15 → 30 min).
+    lock_tier counts completed timed lock cycles (15 min → 30 min, then permanent).
     After all tiers are exhausted, permanently_locked requires admin unlock.
 
     Owned by the middleware (not Core Banking). Survives process restarts

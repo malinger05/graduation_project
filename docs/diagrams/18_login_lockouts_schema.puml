@@ -1,0 +1,32 @@
+@startuml login_lockouts_schema
+title login_lockouts — Middleware operational table
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 12
+
+entity "login_lockouts" as ll {
+  * **account_number** : VARCHAR <<PK>>
+  --
+  failed_attempts : INTEGER
+  lock_tier : INTEGER
+  locked_until : TIMESTAMPTZ <<nullable>>
+  permanently_locked : BOOLEAN
+  must_reset_pin : BOOLEAN
+  updated_at : TIMESTAMPTZ
+}
+
+note right of ll
+  **Owned by middleware** (not Core Banking).
+  Lock after each **3** invalid attempts.
+  Timed tiers: **15 → 30** minutes (9 failures → permanent).
+  Then **permanently_locked** (admin only).
+  **admin_unlock()** clears locks and sets
+  **must_reset_pin** until customer uses
+  **POST /atm/reset-pin**.
+  **reset()** deletes row on successful login
+  (not while must_reset_pin is set).
+  In-memory fallback if no **MIDDLEWARE_DB_URL**.
+end note
+
+@enduml
