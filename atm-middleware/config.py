@@ -39,8 +39,11 @@ MIDDLEWARE_DB_URL = _str("MIDDLEWARE_DB_URL")
 
 # ── Core Banking bridge ──────────────────────────────────────────────────────
 
-CORE_BANKING_URL = _str("CORE_BANKING_URL", "http://localhost:8080").rstrip("/")
+CORE_BANKING_URL = _str("CORE_BANKING_URL", "https://api.local").rstrip("/")
 SERVICE_TOKEN    = _str("MIDDLEWARE_SERVICE_TOKEN")
+
+# mTLS client cert for https://api.local (paths under ~/atm-tls by default)
+MTLS_CA_FILE = _str("MTLS_CA_FILE")
 
 # ── Sessions / lockouts ──────────────────────────────────────────────────────
 

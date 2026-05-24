@@ -21,7 +21,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import requests
+import cb_http
 from sqlalchemy import delete, select
 
 import db
@@ -103,7 +103,7 @@ def _close_account_via_core_banking(
 
     try:
         # Resolve account
-        resp = requests.get(
+        resp = cb_http.get(
             f"{core_banking_url}/customers",
             headers=headers,
             timeout=(3, 15),
@@ -117,7 +117,7 @@ def _close_account_via_core_banking(
             cid = customer.get("customerId")
             if not cid:
                 continue
-            acc_resp = requests.get(
+            acc_resp = cb_http.get(
                 f"{core_banking_url}/customers/{cid}/accounts",
                 headers=headers,
                 timeout=(3, 15),
@@ -129,7 +129,7 @@ def _close_account_via_core_banking(
                     aid = acc.get("accountId")
                     if not aid:
                         return False
-                    del_resp = requests.delete(
+                    del_resp = cb_http.delete(
                         f"{core_banking_url}/customers/{cid}/accounts/{aid}",
                         headers=headers,
                         timeout=(3, 15),

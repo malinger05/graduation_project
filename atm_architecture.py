@@ -14,11 +14,31 @@ import os
 import requests
 from dotenv import load_dotenv
 
+from tls_verify import requests_verify
+
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-MIDDLEWARE_URL = os.environ.get("MIDDLEWARE_URL", "http://localhost:8000").rstrip("/")
+MIDDLEWARE_URL = os.environ.get("MIDDLEWARE_URL", "https://mw.local").rstrip("/")
+
+
+def _mw_verify() -> bool | str:
+    return requests_verify(MIDDLEWARE_URL)
+
+
+def _mw_unreachable(exc: Exception) -> RuntimeError:
+    if isinstance(exc, requests.exceptions.SSLError):
+        return RuntimeError(
+            f"TLS failed for middleware at {MIDDLEWARE_URL}.\n"
+            "Run: ./scripts/gen_mtls_client_cert.sh (creates ~/atm-tls/mkcert-rootCA.pem)\n"
+            "Ensure Caddy is running: cd ~/atm-tls && sudo caddy run --config Caddyfile"
+        )
+    return RuntimeError(
+        f"Cannot reach middleware at {MIDDLEWARE_URL}.\n"
+        "Start it: cd atm-middleware && python3 middleware.py\n"
+        "And Caddy: cd ~/atm-tls && sudo caddy run --config Caddyfile"
+    )
 
 
 # ── Middleware HTTP client ─────────────────────────────────────────────────────
@@ -66,12 +86,10 @@ class MiddlewareClient:
                 json={"cardNumber": card_number},   # middleware expects cardNumber
                 headers={"X-Channel": "ATM_WEB"},
                 timeout=10,
+                verify=_mw_verify(),
             )
-        except requests.exceptions.ConnectionError:
-            raise RuntimeError(
-                f"Cannot reach middleware at {self.base_url}.\n"
-                "Start it: cd atm-middleware && python3 middleware.py"
-            )
+        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError) as e:
+            raise _mw_unreachable(e) from e
         try:
             return resp.json()
         except ValueError:
@@ -92,12 +110,10 @@ class MiddlewareClient:
                 json={"cardNumber": card_number, "pin": pin},   # middleware expects cardNumber
                 headers={"X-Channel": "ATM_WEB"},
                 timeout=10,
+                verify=_mw_verify(),
             )
-        except requests.exceptions.ConnectionError:
-            raise RuntimeError(
-                f"Cannot reach middleware at {self.base_url}.\n"
-                "Start it: cd atm-middleware && python3 middleware.py"
-            )
+        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError) as e:
+            raise _mw_unreachable(e) from e
 
         try:
             data = resp.json()
@@ -162,12 +178,10 @@ class MiddlewareClient:
                 },
                 headers={"X-Channel": "ATM_WEB"},
                 timeout=10,
+                verify=_mw_verify(),
             )
-        except requests.exceptions.ConnectionError:
-            raise RuntimeError(
-                f"Cannot reach middleware at {self.base_url}.\n"
-                "Start it: cd atm-middleware && python3 middleware.py"
-            )
+        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError) as e:
+            raise _mw_unreachable(e) from e
         try:
             return resp.json()
         except ValueError:
@@ -204,8 +218,9 @@ class MiddlewareClient:
                 json={"amount": amount},
                 headers=self._mutation_headers(idempotency_key),
                 timeout=30,
+                verify=_mw_verify(),
             )
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError):
             return False, "Cannot reach middleware", None
 
         if not resp.ok:
@@ -234,8 +249,9 @@ class MiddlewareClient:
                 json={"amount": amount},
                 headers=self._mutation_headers(idempotency_key),
                 timeout=30,
+                verify=_mw_verify(),
             )
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError):
             return False, "Cannot reach middleware", None
 
         if resp.status_code == 400:
@@ -269,8 +285,9 @@ class MiddlewareClient:
                 json={"middlewareTxId": middleware_tx_id},
                 headers=self._headers(),
                 timeout=10,
+                verify=_mw_verify(),
             )
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError):
             return False, "Cannot reach middleware"
         if not resp.ok:
             return False, f"Dispense confirm failed: {resp.text}"
@@ -285,6 +302,7 @@ class MiddlewareClient:
                 f"{self.base_url}/atm/transactions",
                 headers=self._headers(),
                 timeout=10,
+                verify=_mw_verify(),
             )
             if resp.ok:
                 data = resp.json()

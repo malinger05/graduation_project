@@ -35,6 +35,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+import cb_http
 import requests
 from dotenv import load_dotenv
 from typing import Any
@@ -348,7 +349,7 @@ def _retention_cleanup() -> None:
         admin_user = os.environ.get("ADMIN_PANEL_USERNAME", "admin")
         admin_pass = os.environ.get("ADMIN_PANEL_PASSWORD", "admin123")
         try:
-            resp = requests.post(
+            resp = cb_http.post(
                 f"{CORE_BANKING_URL}/auth/login",
                 json={"username": admin_user, "password": admin_pass},
                 timeout=(3, 10),
@@ -390,8 +391,8 @@ def _cb_post(path: str, body: dict, token: str | None = None, extra_headers: dic
     if extra_headers:
         headers.update(extra_headers)
     try:
-        resp = requests.post(f"{CORE_BANKING_URL}{path}", json=body,
-                             headers=headers, timeout=(3, 12))
+        resp = cb_http.post(f"{CORE_BANKING_URL}{path}", json=body,
+                            headers=headers, timeout=(3, 12))
     except requests.exceptions.ConnectionError:
         raise HTTPException(503, f"Cannot reach Core Banking at {CORE_BANKING_URL}")
     return resp
@@ -413,7 +414,7 @@ def _resolve_card_to_account(card_number: str) -> str | None:
     card (return a generic auth error so as not to leak card validity).
     """
     try:
-        resp = requests.get(
+        resp = cb_http.get(
             f"{CORE_BANKING_URL}/atm/resolve-card",
             params={"cardNumber": card_number},
             timeout=(3, 10),
@@ -1215,7 +1216,7 @@ def get_transactions(
     account_id = session["account_id"]
     jwt        = session["jwt"]
     try:
-        resp = requests.get(
+        resp = cb_http.get(
             f"{CORE_BANKING_URL}/accounts/{account_id}/transactions",
             headers={"Authorization": f"Bearer {jwt}"},
             timeout=(3, 12),
@@ -1244,7 +1245,7 @@ def atm_tx_status(
     channel = _resolve_channel(x_channel)
     session = sessions.get(x_session_token)
     try:
-        resp = requests.get(
+        resp = cb_http.get(
             f"{CORE_BANKING_URL}/admin/transactions/{transaction_id}",
             headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
             timeout=(3, 10),
@@ -1265,4 +1266,4 @@ def atm_tx_status(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("middleware:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("middleware:app", host="127.0.0.1", port=8000, reload=False)

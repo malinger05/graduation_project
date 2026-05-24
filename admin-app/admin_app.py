@@ -32,7 +32,7 @@ from secrets_manager import get_secret
 load_dotenv()
 
 CORE_BANKING_URL = os.environ.get("CORE_BANKING_URL", "http://localhost:8080").rstrip("/")
-MIDDLEWARE_URL   = os.environ.get("MIDDLEWARE_URL", "http://localhost:8000").rstrip("/")
+MIDDLEWARE_URL   = os.environ.get("MIDDLEWARE_URL", "https://mw.local").rstrip("/")
 SERVICE_TOKEN    = get_secret("MIDDLEWARE_SERVICE_TOKEN", "", allow_env_fallback=True).strip()
 
 # Admin credentials stored in env — not in DB for simplicity

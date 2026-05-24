@@ -9,8 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import requests
-
+import cb_http
 import config
 
 
@@ -35,7 +34,7 @@ class AdminClient:
     # ── Reads ─────────────────────────────────────────────────────────────────
 
     def get_pending_submit(self, limit: int = 25, max_attempts: int = 8) -> list[dict]:
-        resp = requests.get(
+        resp = cb_http.get(
             f"{self.base_url}/admin/transactions/pending-submit",
             headers=self._headers(),
             params={"limit": limit, "maxAttempts": max_attempts},
@@ -45,7 +44,7 @@ class AdminClient:
         return resp.json()
 
     def get_submitted(self, limit: int = 25) -> list[dict]:
-        resp = requests.get(
+        resp = cb_http.get(
             f"{self.base_url}/admin/transactions/submitted",
             headers=self._headers(),
             params={"limit": limit},
@@ -58,7 +57,7 @@ class AdminClient:
         params: dict[str, Any] = {"limit": limit}
         if since_iso:
             params["since"] = since_iso
-        resp = requests.get(
+        resp = cb_http.get(
             f"{self.base_url}/admin/transactions/for-tamper-check",
             headers=self._headers(),
             params=params,
@@ -74,7 +73,7 @@ class AdminClient:
                          canonical_hash: str | None = None,
                          blockchain_tx: str | None = None,
                          submit_error: str | None = None) -> dict:
-        resp = requests.patch(
+        resp = cb_http.patch(
             f"{self.base_url}/admin/transactions/{transaction_id}/blockchain",
             headers=self._headers(),
             json={
@@ -88,7 +87,7 @@ class AdminClient:
         return resp.json()
 
     def patch_confirm(self, transaction_id: int) -> dict:
-        resp = requests.patch(
+        resp = cb_http.patch(
             f"{self.base_url}/admin/transactions/{transaction_id}/confirm",
             headers=self._headers(),
             timeout=(3, 12),
@@ -97,7 +96,7 @@ class AdminClient:
         return resp.json()
 
     def patch_tampered(self, transaction_id: int, reason: str) -> dict:
-        resp = requests.patch(
+        resp = cb_http.patch(
             f"{self.base_url}/admin/transactions/{transaction_id}/tampered",
             headers=self._headers(),
             json={"reason": reason},

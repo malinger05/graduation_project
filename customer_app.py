@@ -25,6 +25,9 @@ from atm_architecture import (
     AccountsRepository,
     TransactionsRepository,
 )
+from tls_verify import requests_verify
+
+_MW_VERIFY = lambda: requests_verify(MIDDLEWARE_URL)
 
 app = Flask(__name__)
 app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
@@ -65,6 +68,7 @@ def _evict_atm_session(atm_key: str) -> None:
                     f"{client.base_url}/atm/logout",
                     headers={"x-session-token": client._session_token},
                     timeout=5,
+                    verify=_MW_VERIFY(),
                 )
         except Exception:
             pass
@@ -384,6 +388,7 @@ def session_continue():
                 f"{MIDDLEWARE_URL}/atm/session/continue",
                 headers={"x-session-token": token},
                 timeout=5,
+                verify=_MW_VERIFY(),
             )
             if resp.status_code == 401:
                 session.clear()
@@ -549,6 +554,7 @@ def tx_status(transaction_id):
             f"{MIDDLEWARE_URL}/atm/tx-status/{transaction_id}",
             headers={"x-session-token": atm.accounts_repo.client._session_token},
             timeout=5,
+            verify=_MW_VERIFY(),
         )
         return resp.json(), resp.status_code
     except Exception:
