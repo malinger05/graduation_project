@@ -137,6 +137,10 @@ class TransactionLog(Base):
     duration_ms          = Column(Integer, nullable=True)
     error_message        = Column(String, nullable=True)
 
+    # mTLS client cert metadata (from Caddy headers on mw.local)
+    client_cert_subject  = Column(String, nullable=True)
+    client_cert_serial   = Column(String, nullable=True, index=True)
+
 
 class CorrelationLog(Base):
     """

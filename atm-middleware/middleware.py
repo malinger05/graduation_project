@@ -65,6 +65,7 @@ import lockouts
 import sessions
 import retention
 import transaction_logs
+import client_cert
 from admin_client import AdminClient
 from canonical import hash_transaction
 
@@ -121,10 +122,18 @@ def _get_admin_client() -> AdminClient | None:
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
+_cert_monitor_stop = threading.Event()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     threading.Thread(target=_session_cleanup, daemon=True).start()
     threading.Thread(target=_retention_cleanup, daemon=True).start()
+    threading.Thread(
+        target=client_cert.monitor_loop,
+        args=(_cert_monitor_stop,),
+        daemon=True,
+    ).start()
 
     print(f"[Middleware] Layer 2 started on port 8000")
     print(f"[Middleware] Core Banking: {CORE_BANKING_URL}")
@@ -140,6 +149,13 @@ async def lifespan(app: FastAPI):
                 )
             else:
                 print("[Middleware] Retention: disabled (TRANSACTION_LOG_RETENTION_DAYS=0)")
+            if config.CLIENT_CERT_MONITOR_ENABLED:
+                allowed = client_cert.load_allowed_serials()
+                enforce = "enforce allow-list (403)" if config.CLIENT_CERT_ENFORCE_ALLOWLIST else "log only"
+                print(
+                    f"[Middleware] Client cert monitor: {len(allowed)} allowed serial(s), "
+                    f"{enforce}, scan every {config.CLIENT_CERT_MONITOR_INTERVAL_SECONDS}s"
+                )
         else:
             print("[Middleware] Operational DB: disabled (MIDDLEWARE_DB_URL unset)")
     except Exception as e:
@@ -173,8 +189,34 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    _cert_monitor_stop.set()
+
 
 app = FastAPI(title="ATM Middleware — Layer 2", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def _capture_client_cert(request: Request, call_next):
+    info = client_cert.extract_from_headers(dict(request.headers))
+    client_cert.set_current(info)
+    try:
+        if request.url.path.startswith("/atm"):
+            blocked = client_cert.rejection_detail(info, endpoint=request.url.path)
+            if blocked:
+                fields = client_cert.format_cert_audit_fields(info)
+                transaction_logs.log_event(
+                    endpoint=request.url.path,
+                    http_method=request.method,
+                    outcome="error",
+                    response_status_code=403,
+                    response_body={"detail": blocked},
+                    error_message=blocked,
+                    **fields,
+                )
+                return JSONResponse(status_code=403, content={"detail": blocked})
+        return await call_next(request)
+    finally:
+        client_cert.set_current(None)
 
 
 @app.exception_handler(HTTPException)
@@ -182,13 +224,20 @@ async def _audit_http_exception(request: Request, exc: HTTPException) -> JSONRes
     """Log failed /atm/* requests; re-raise as JSON for the client."""
     if request.url.path.startswith("/atm"):
         detail = exc.detail
+        cert = client_cert.extract_from_headers(dict(request.headers))
+        cert_warn = client_cert.check_and_warn(cert, endpoint=request.url.path)
+        fields = client_cert.format_cert_audit_fields(cert)
+        err = str(detail)
+        if cert_warn:
+            err = f"{err}; {cert_warn}" if err else cert_warn
         transaction_logs.log_event(
             endpoint=request.url.path,
             http_method=request.method,
             outcome="error",
             response_status_code=exc.status_code,
             response_body={"detail": detail},
-            error_message=str(detail),
+            error_message=err,
+            **fields,
         )
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
@@ -225,6 +274,12 @@ def _audit(
     error_message: str | None = None,
     correlation_id: str | None = None,
 ) -> None:
+    cert = client_cert.current()
+    cert_warn = client_cert.check_and_warn(cert, endpoint=endpoint)
+    fields = client_cert.format_cert_audit_fields(cert)
+    err = error_message
+    if cert_warn:
+        err = f"{err}; {cert_warn}" if err else cert_warn
     transaction_logs.log_event(
         endpoint=endpoint,
         http_method=http_method,
@@ -236,8 +291,9 @@ def _audit(
         request_body=request_body,
         response_body=response_body,
         duration_ms=int((time.perf_counter() - started) * 1000),
-        error_message=error_message,
+        error_message=err,
         correlation_id=correlation_id,
+        **fields,
     )
 
 
@@ -468,6 +524,23 @@ def _require_service_token(x_service_token: str | None) -> None:
 @app.get("/health")
 def health():
     return {"status": "ok", "layer": 2, "service": "ATM Middleware"}
+
+
+@app.get("/health/cert-headers")
+def health_cert_headers(request: Request):
+    """Diagnostic: client cert metadata received from Caddy (call via https://mw.local with mTLS)."""
+    headers = dict(request.headers)
+    info = client_cert.extract_from_headers(headers)
+    der_key = next((k for k in headers if k.lower() == "x-client-cert-der"), None)
+    der_len = len(headers[der_key]) if der_key else 0
+    return {
+        "client_cert_subject": info.subject,
+        "client_cert_serial": info.normalized_serial,
+        "der_header_length": der_len,
+        "cert_related_headers": sorted(
+            k for k in headers if "cert" in k.lower() or "client" in k.lower()
+        ),
+    }
 
 
 @app.post("/atm/account-status")

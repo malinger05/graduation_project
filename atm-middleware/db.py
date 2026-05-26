@@ -17,8 +17,10 @@ Connection:
 
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
-from typing import Iterator
+from pathlib import Path
+from typing import Any, Iterator
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
@@ -36,6 +38,22 @@ def get_db_url() -> str:
     return config.MIDDLEWARE_DB_URL
 
 
+def _postgres_ssl_connect_args() -> dict[str, Any]:
+    """
+  TLS to local Docker Postgres when ~/atm-tls/postgres/ca.pem exists.
+  Uses verify-full (hostname localhost must match server cert SAN).
+  """
+    explicit = os.environ.get("POSTGRES_SSL_ROOT", "").strip()
+    if explicit:
+        ca = Path(explicit)
+    else:
+        tls_root = os.environ.get("ATM_TLS_DIR", "").strip() or str(Path.home() / "atm-tls")
+        ca = Path(tls_root) / "postgres" / "ca.pem"
+    if not ca.is_file():
+        return {}
+    return {"sslmode": "verify-full", "sslrootcert": str(ca)}
+
+
 def is_enabled() -> bool:
     """True iff a middleware database is configured and initialized."""
     return _engine is not None
@@ -45,7 +63,11 @@ def _build_engine() -> Engine | None:
     url = get_db_url()
     if not url:
         return None
-    return create_engine(url, pool_pre_ping=True, future=True)
+    connect_args = _postgres_ssl_connect_args()
+    kwargs: dict[str, Any] = {"pool_pre_ping": True, "future": True}
+    if connect_args:
+        kwargs["connect_args"] = connect_args
+    return create_engine(url, **kwargs)
 
 
 def init_db() -> bool:
@@ -68,6 +90,7 @@ def init_db() -> bool:
     Base.metadata.create_all(bind=_engine)
     _migrate_login_lockouts(_engine)
     _migrate_session_state(_engine)
+    _migrate_transaction_logs_client_cert(_engine)
     _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
     return True
 
@@ -106,6 +129,25 @@ def _migrate_session_state(engine: Engine) -> None:
             text(
                 "ALTER TABLE session_state "
                 "ADD COLUMN IF NOT EXISTS card_number VARCHAR NOT NULL DEFAULT ''"
+            )
+        )
+
+
+def _migrate_transaction_logs_client_cert(engine: Engine) -> None:
+    """Add mTLS client cert columns to transaction_logs on existing deployments."""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE transaction_logs "
+                "ADD COLUMN IF NOT EXISTS client_cert_subject VARCHAR"
+            )
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE transaction_logs "
+                "ADD COLUMN IF NOT EXISTS client_cert_serial VARCHAR"
             )
         )
 

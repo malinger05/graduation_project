@@ -29,10 +29,15 @@ if _PROJECT_ROOT not in sys.path:
 
 from secrets_manager import get_secret
 
+import admin_mw_http
+
 load_dotenv()
 
 CORE_BANKING_URL = os.environ.get("CORE_BANKING_URL", "http://localhost:8080").rstrip("/")
-MIDDLEWARE_URL   = os.environ.get("MIDDLEWARE_URL", "https://mw.local").rstrip("/")
+# Admin → middleware: https://mw.local with admin-staff mTLS cert + X-Service-Token.
+MIDDLEWARE_DIRECT_URL = os.environ.get(
+    "MIDDLEWARE_DIRECT_URL", "https://mw.local"
+).rstrip("/")
 SERVICE_TOKEN    = get_secret("MIDDLEWARE_SERVICE_TOKEN", "", allow_env_fallback=True).strip()
 
 # Admin credentials stored in env — not in DB for simplicity
@@ -86,16 +91,19 @@ def _cb_service(method, path, **kwargs):
 
 
 def _mw(method, path, **kwargs):
-    """Call Middleware with Service Token auth."""
+    """Call Middleware with mTLS (admin-staff cert) + X-Service-Token."""
+    headers = {"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"}
+    headers.update(kwargs.pop("headers", {}) or {})
     try:
-        resp = getattr(_req, method)(
-            f"{MIDDLEWARE_URL}{path}",
-            headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
+        fn = getattr(admin_mw_http, method)
+        resp = fn(
+            f"{MIDDLEWARE_DIRECT_URL}{path}",
+            headers=headers,
             timeout=(3, 10),
-            **kwargs
+            **kwargs,
         )
         return resp
-    except _req.exceptions.ConnectionError:
+    except (_req.exceptions.ConnectionError, RuntimeError):
         return None
 
 
@@ -557,4 +565,6 @@ def update_card_status(card_id):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5002"))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    host = os.environ.get("BIND_HOST", "127.0.0.1")
+    print(f"[admin_app] http://{host}:{port}  (browser: https://admin.local via Caddy)")
+    app.run(host=host, port=port, debug=False)

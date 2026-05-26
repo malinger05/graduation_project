@@ -96,3 +96,25 @@ TRANSACTION_LOG_RETENTION_DAYS = _int("TRANSACTION_LOG_RETENTION_DAYS", 90)
 
 # How often the background retention job runs (default: every hour).
 RETENTION_CLEANUP_INTERVAL_SECONDS = _int("RETENTION_CLEANUP_INTERVAL_SECONDS", 3600)
+
+# ── mTLS client cert monitoring (mw.local via Caddy) ─────────────────────────
+
+# Comma-separated serials; empty = auto-load from ~/atm-tls/*-client.pem
+CLIENT_CERT_ALLOWED_SERIALS = _str("CLIENT_CERT_ALLOWED_SERIALS", "")
+
+CLIENT_CERT_MONITOR_ENABLED = _str("CLIENT_CERT_MONITOR_ENABLED", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+
+CLIENT_CERT_MONITOR_INTERVAL_SECONDS = _int("CLIENT_CERT_MONITOR_INTERVAL_SECONDS", 300)
+
+CLIENT_CERT_MONITOR_LOOKBACK_SECONDS = _int("CLIENT_CERT_MONITOR_LOOKBACK_SECONDS", 3600)
+
+# Reject /atm/* when X-Client-Cert-Serial is present but not on the allow-list (default on).
+CLIENT_CERT_ENFORCE_ALLOWLIST = _str("CLIENT_CERT_ENFORCE_ALLOWLIST", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)

@@ -1,0 +1,42 @@
+# Copy to ~/atm-tls/Caddyfile (or run: ./scripts/caddy/install_caddyfile.sh)
+# Requires: brew install caddy mkcert && mkcert -install
+# Add to /etc/hosts:
+#   127.0.0.1 atm.local admin.local mw.local api.local
+
+atm.local {
+	tls __ATM_TLS_CERT__ __ATM_TLS_KEY__
+	reverse_proxy 127.0.0.1:5001
+}
+
+admin.local {
+	tls __ATM_TLS_CERT__ __ATM_TLS_KEY__
+	reverse_proxy 127.0.0.1:5002
+}
+
+# Layer 1 (Flask) → Layer 2 (middleware) — mTLS: kiosk client cert required
+# Run: ./scripts/gen_kiosk_client_cert.sh
+mw.local {
+	tls __ATM_TLS_CERT__ __ATM_TLS_KEY__ {
+		client_auth {
+			mode require_and_verify
+			trust_pool file __MKCERT_CA__
+		}
+	}
+	reverse_proxy 127.0.0.1:8000 {
+		# Client cert metadata (DER is reliable; subject/serial placeholders are often empty in header_up)
+		header_up X-Client-Cert-DER {http.request.tls.client.certificate_der_base64}
+		header_up X-Client-Cert-Subject {http.request.tls.client.subject}
+		header_up X-Client-Cert-Serial {http.request.tls.client.serial}
+	}
+}
+
+# Layer 2 → Layer 3 (mTLS): middleware must present client certificate
+api.local {
+	tls __ATM_TLS_CERT__ __ATM_TLS_KEY__ {
+		client_auth {
+			mode require_and_verify
+			trust_pool file __MKCERT_CA__
+		}
+	}
+	reverse_proxy 127.0.0.1:8080
+}

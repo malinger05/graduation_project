@@ -104,7 +104,8 @@ the Sepolia RPC. Override `PORT` if Flask should not bind on `5000`.
 In the `core-banking-system` repo:
 
 ```bash
-docker-compose up -d           # PostgreSQL on localhost:5332
+# From graduation_project (once): ./scripts/gen_postgres_server_cert.sh
+docker compose up -d           # PostgreSQL :5332 (CB) and :5433 (middleware), TLS required
 ./mvnw spring-boot:run         # Spring Boot on localhost:8080
 ```
 
@@ -127,16 +128,55 @@ set those keychain entries and restart (or wait; each worker tick re-checks).
 
 ## 6) Start the UI (Layer 1)
 
+Flask binds **127.0.0.1** only (not the whole LAN). Use Caddy hostnames in the browser:
+
+```bash
+./scripts/caddy/install_caddyfile.sh   # once: ~/atm-tls/Caddyfile + mkcert certs
+cd ~/atm-tls && sudo caddy run --config Caddyfile   # separate terminal
+```
+
 ```bash
 source atm_venv/bin/activate
-honcho start                   # Flask web on PORT (default 5001)
+
+# Terminal A — ATM UI (must be :5001 for Caddy atm.local)
+python3 customer_app.py
+
+# Terminal B — Admin UI (must be :5002 for Caddy admin.local)
+python3 admin-app/admin_app.py
 ```
 
-Or directly:
+Defaults are ports **5001** and **5002**. Open **https://atm.local** and **https://admin.local** in the browser (not `http://127.0.0.1:5001`).
+
+Middleware stays on `127.0.0.1:8000`; the UI talks to it via **https://mw.local** (Caddy → :8000).
+
+### Kiosk mTLS (Fix 2 — `mw.local`)
+
+Only the ATM client may call middleware over HTTPS:
 
 ```bash
-python3 customer_app.py
+./scripts/gen_kiosk_client_cert.sh          # ~/atm-tls/atm-kiosk-client.pem
+./scripts/caddy/install_caddyfile.sh      # mw.local requires client cert
+cd ~/atm-tls && sudo caddy run --config Caddyfile
 ```
+
+Admin panel uses `http://127.0.0.1:8000` + `X-Service-Token` (see `MIDDLEWARE_DIRECT_URL` in `.env.example`).
+
+### mTLS certificate rotation (local dev)
+
+Client certs for `mw.local` and `api.local` can be renewed automatically before they expire.
+Caddy still trusts the mkcert CA; only the client PEM files are replaced. Apps read the same
+paths on each request, so you do not need to restart Flask or middleware after rotation.
+
+```bash
+./scripts/mtls/rotate_mtls_certs.sh              # renew if <= 30 days left (default)
+./scripts/mtls/rotate_mtls_certs.sh --dry-run    # show what would happen
+./scripts/mtls/rotate_mtls_certs.sh --force      # renew now
+
+# Quick demo (1-day cert, renew immediately):
+MTLS_CERT_VALIDITY_DAYS=1 MTLS_RENEW_BEFORE_DAYS=0 ./scripts/mtls/rotate_mtls_certs.sh --force
+```
+
+Optional daily cron: `0 3 * * * cd /path/to/graduation_project && ./scripts/mtls/rotate_mtls_certs.sh`
 
 ## 7) Log in
 
@@ -190,6 +230,6 @@ graduation_project/
 ├── scripts/manage_secrets.py
 ├── templates/, static/          # Flask templates and assets
 ├── tests/                       # pytest target
-├── Procfile                     # honcho: web only (worker runs inside middleware)
+├── Procfile                     # optional honcho profile (not required)
 └── requirements.txt
 ```

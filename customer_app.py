@@ -14,20 +14,17 @@ from functools import wraps
 from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, session, url_for, jsonify
 import qrcode
-import requests as _req
 from secrets_manager import get_secret
 
 load_dotenv()
 
+import mw_http
 from atm_architecture import (
     MIDDLEWARE_URL,
     ATMApp,
     AccountsRepository,
     TransactionsRepository,
 )
-from tls_verify import requests_verify
-
-_MW_VERIFY = lambda: requests_verify(MIDDLEWARE_URL)
 
 app = Flask(__name__)
 app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
@@ -64,11 +61,10 @@ def _evict_atm_session(atm_key: str) -> None:
             atm: ATMApp = entry["atm"]
             client = atm.accounts_repo.client
             if client._session_token:
-                _req.post(
+                mw_http.post(
                     f"{client.base_url}/atm/logout",
                     headers={"x-session-token": client._session_token},
                     timeout=5,
-                    verify=_MW_VERIFY(),
                 )
         except Exception:
             pass
@@ -384,11 +380,10 @@ def session_continue():
     token = atm.accounts_repo.client._session_token
     if token:
         try:
-            resp = _req.post(
+            resp = mw_http.post(
                 f"{MIDDLEWARE_URL}/atm/session/continue",
                 headers={"x-session-token": token},
                 timeout=5,
-                verify=_MW_VERIFY(),
             )
             if resp.status_code == 401:
                 session.clear()
@@ -550,11 +545,10 @@ def tx_status(transaction_id):
     if not atm:
         return jsonify({"error": "no session"}), 401
     try:
-        resp = _req.get(
+        resp = mw_http.get(
             f"{MIDDLEWARE_URL}/atm/tx-status/{transaction_id}",
             headers={"x-session-token": atm.accounts_repo.client._session_token},
             timeout=5,
-            verify=_MW_VERIFY(),
         )
         return resp.json(), resp.status_code
     except Exception:
@@ -563,4 +557,7 @@ def tx_status(transaction_id):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5001"))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    # Localhost only — use Caddy https://atm.local in the browser (see scripts/caddy/).
+    host = os.environ.get("BIND_HOST", "127.0.0.1")
+    print(f"[customer_app] http://{host}:{port}  (browser: https://atm.local via Caddy)")
+    app.run(host=host, port=port, debug=False)

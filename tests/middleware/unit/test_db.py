@@ -29,3 +29,22 @@ class TestDbEnabled:
 
         monkeypatch.setattr(config, "MIDDLEWARE_DB_URL", "postgresql://testdb", raising=False)
         assert db.get_db_url() == "postgresql://testdb"
+
+    def test_postgres_ssl_connect_args_when_ca_missing(self, monkeypatch):
+        import db
+
+        monkeypatch.delenv("POSTGRES_SSL_ROOT", raising=False)
+        monkeypatch.setenv("ATM_TLS_DIR", "/nonexistent-atm-tls")
+        assert db._postgres_ssl_connect_args() == {}
+
+    def test_postgres_ssl_connect_args_when_ca_present(self, tmp_path, monkeypatch):
+        import db
+
+        ca = tmp_path / "postgres" / "ca.pem"
+        ca.parent.mkdir()
+        ca.write_text("fake-ca", encoding="utf-8")
+        monkeypatch.setenv("ATM_TLS_DIR", str(tmp_path))
+        assert db._postgres_ssl_connect_args() == {
+            "sslmode": "verify-full",
+            "sslrootcert": str(ca),
+        }

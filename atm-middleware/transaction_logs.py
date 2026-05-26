@@ -60,6 +60,8 @@ def log_event(
     duration_ms: int | None = None,
     error_message: str | None = None,
     correlation_id: str | None = None,
+    client_cert_subject: str | None = None,
+    client_cert_serial: str | None = None,
 ) -> None:
     """
     Append one audit row. outcome is one of: success, error, cached.
@@ -86,4 +88,6 @@ def log_event(
             outcome              = outcome,
             duration_ms          = duration_ms,
             error_message        = error_message,
+            client_cert_subject  = client_cert_subject,
+            client_cert_serial   = client_cert_serial,
         ))

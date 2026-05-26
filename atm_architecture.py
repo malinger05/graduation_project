@@ -14,7 +14,7 @@ import os
 import requests
 from dotenv import load_dotenv
 
-from tls_verify import requests_verify
+import mw_http
 
 load_dotenv()
 
@@ -23,16 +23,15 @@ load_dotenv()
 MIDDLEWARE_URL = os.environ.get("MIDDLEWARE_URL", "https://mw.local").rstrip("/")
 
 
-def _mw_verify() -> bool | str:
-    return requests_verify(MIDDLEWARE_URL)
-
-
 def _mw_unreachable(exc: Exception) -> RuntimeError:
+    if isinstance(exc, RuntimeError):
+        return exc
     if isinstance(exc, requests.exceptions.SSLError):
         return RuntimeError(
-            f"TLS failed for middleware at {MIDDLEWARE_URL}.\n"
-            "Run: ./scripts/gen_mtls_client_cert.sh (creates ~/atm-tls/mkcert-rootCA.pem)\n"
-            "Ensure Caddy is running: cd ~/atm-tls && sudo caddy run --config Caddyfile"
+            f"TLS/mTLS failed for middleware at {MIDDLEWARE_URL}.\n"
+            "Run: ./scripts/gen_kiosk_client_cert.sh\n"
+            "Ensure Caddy mw.local has client_auth (scripts/caddy/Caddyfile.example)\n"
+            "Then: cd ~/atm-tls && sudo caddy run --config Caddyfile"
         )
     return RuntimeError(
         f"Cannot reach middleware at {MIDDLEWARE_URL}.\n"
@@ -81,14 +80,13 @@ class MiddlewareClient:
         checking lockout state, so the lockout is always keyed by accountNumber.
         """
         try:
-            resp = requests.post(
+            resp = mw_http.post(
                 f"{self.base_url}/atm/account-status",
                 json={"cardNumber": card_number},   # middleware expects cardNumber
                 headers={"X-Channel": "ATM_WEB"},
                 timeout=10,
-                verify=_mw_verify(),
             )
-        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError) as e:
+        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError, RuntimeError) as e:
             raise _mw_unreachable(e) from e
         try:
             return resp.json()
@@ -105,14 +103,13 @@ class MiddlewareClient:
         Lockouts are keyed by accountNumber (resolved inside middleware).
         """
         try:
-            resp = requests.post(
+            resp = mw_http.post(
                 f"{self.base_url}/atm/login",
                 json={"cardNumber": card_number, "pin": pin},   # middleware expects cardNumber
                 headers={"X-Channel": "ATM_WEB"},
                 timeout=10,
-                verify=_mw_verify(),
             )
-        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError) as e:
+        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError, RuntimeError) as e:
             raise _mw_unreachable(e) from e
 
         try:
@@ -169,7 +166,7 @@ class MiddlewareClient:
     def reset_pin(self, card_number: str, new_pin: str, confirm_pin: str) -> dict:
         """POST /atm/reset-pin — customer sets new PIN after admin unlock."""
         try:
-            resp = requests.post(
+            resp = mw_http.post(
                 f"{self.base_url}/atm/reset-pin",
                 json={
                     "cardNumber": card_number,   # middleware expects cardNumber
@@ -178,9 +175,8 @@ class MiddlewareClient:
                 },
                 headers={"X-Channel": "ATM_WEB"},
                 timeout=10,
-                verify=_mw_verify(),
             )
-        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError) as e:
+        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError, RuntimeError) as e:
             raise _mw_unreachable(e) from e
         try:
             return resp.json()
@@ -213,12 +209,11 @@ class MiddlewareClient:
         the transaction. Middleware logs the canonical hash to Sepolia.
         """
         try:
-            resp = requests.post(
+            resp = mw_http.post(
                 f"{self.base_url}/atm/deposit",
                 json={"amount": amount},
                 headers=self._mutation_headers(idempotency_key),
                 timeout=30,
-                verify=_mw_verify(),
             )
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError):
             return False, "Cannot reach middleware", None
@@ -244,12 +239,11 @@ class MiddlewareClient:
         after cash is dispensed or the bank scheduler auto-reverses.
         """
         try:
-            resp = requests.post(
+            resp = mw_http.post(
                 f"{self.base_url}/atm/withdraw",
                 json={"amount": amount},
                 headers=self._mutation_headers(idempotency_key),
                 timeout=30,
-                verify=_mw_verify(),
             )
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError):
             return False, "Cannot reach middleware", None
@@ -280,12 +274,11 @@ class MiddlewareClient:
     def confirm_dispense(self, middleware_tx_id: int) -> tuple[bool, str]:
         """POST /atm/ack → Core Banking confirm-dispense after cash is dispensed."""
         try:
-            resp = requests.post(
+            resp = mw_http.post(
                 f"{self.base_url}/atm/ack",
                 json={"middlewareTxId": middleware_tx_id},
                 headers=self._headers(),
                 timeout=10,
-                verify=_mw_verify(),
             )
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError):
             return False, "Cannot reach middleware"
@@ -298,11 +291,10 @@ class MiddlewareClient:
     def get_transactions_for_account(self, account_id, limit=None) -> list:
         """GET /atm/transactions → middleware proxies to Core Banking. Returns all transactions."""
         try:
-            resp = requests.get(
+            resp = mw_http.get(
                 f"{self.base_url}/atm/transactions",
                 headers=self._headers(),
                 timeout=10,
-                verify=_mw_verify(),
             )
             if resp.ok:
                 data = resp.json()
