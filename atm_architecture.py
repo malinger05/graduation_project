@@ -84,7 +84,7 @@ class MiddlewareClient:
                 f"{self.base_url}/atm/account-status",
                 json={"cardNumber": card_number},   # middleware expects cardNumber
                 headers={"X-Channel": "ATM_WEB"},
-                timeout=10,
+                timeout=60,
             )
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError, RuntimeError) as e:
             raise _mw_unreachable(e) from e
@@ -107,7 +107,7 @@ class MiddlewareClient:
                 f"{self.base_url}/atm/login",
                 json={"cardNumber": card_number, "pin": pin},   # middleware expects cardNumber
                 headers={"X-Channel": "ATM_WEB"},
-                timeout=10,
+                timeout=60,
             )
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError, RuntimeError) as e:
             raise _mw_unreachable(e) from e
@@ -174,7 +174,7 @@ class MiddlewareClient:
                     "confirmPin": confirm_pin,
                 },
                 headers={"X-Channel": "ATM_WEB"},
-                timeout=10,
+                timeout=60,
             )
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError, RuntimeError) as e:
             raise _mw_unreachable(e) from e
@@ -278,7 +278,7 @@ class MiddlewareClient:
                 f"{self.base_url}/atm/ack",
                 json={"middlewareTxId": middleware_tx_id},
                 headers=self._headers(),
-                timeout=10,
+                timeout=60,
             )
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError):
             return False, "Cannot reach middleware"
@@ -294,7 +294,7 @@ class MiddlewareClient:
             resp = mw_http.get(
                 f"{self.base_url}/atm/transactions",
                 headers=self._headers(),
-                timeout=10,
+                timeout=60,
             )
             if resp.ok:
                 data = resp.json()

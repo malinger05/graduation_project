@@ -1660,6 +1660,25 @@
         grid-template-columns: 1fr 1fr;
         gap: 12px;
       }
+      .new-user-divider {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 14px 0 12px;
+      }
+      .new-user-divider::before,
+      .new-user-divider::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: #e0ddd5;
+      }
+      .new-user-divider span {
+        font-size: 11px;
+        color: var(--text-muted);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
     </style>
   </head>
   <body>
@@ -1703,6 +1722,45 @@
                 Select a service to get started.<br />Your transaction is
                 encrypted end-to-end.
               </p>
+              <style>
+                .idle-actions {
+                  display: flex;
+                  flex-wrap: wrap;
+                  justify-content: center;
+                  gap: 12px;
+                  width: 460px;
+                  margin: 0 auto;
+                }
+                .idle-actions .action-btn {
+                  flex: 1 1 45%;
+                  min-width: 200px;
+                  max-width: 220px;
+                }
+                .idle-actions .action-btn.new-user-btn {
+                  flex: 0 0 100%;
+                  max-width: 100%;
+                  min-width: 420px;
+                  margin-top: 8px;
+                  font-size: 18px;
+                  background: var(--yellow);
+                  color: var(--navy);
+                  text-align: center;
+                  justify-content: center;
+                  align-items: center;
+                }
+                .idle-actions .action-btn.new-user-btn:hover {
+                  background: var(--yellow-dark);
+                  color: var(--navy);
+                }
+                @media (max-width: 600px) {
+                  .idle-actions {
+                    width: 100%;
+                  }
+                  .idle-actions .action-btn.new-user-btn {
+                    min-width: 0;
+                  }
+                }
+              </style>
               <div class="idle-actions">
                 <button class="action-btn" onclick="startFlow('withdraw')">
                   <div class="ab-icon">
@@ -1751,6 +1809,30 @@
                   <div>
                     <div class="ab-label">History</div>
                     <div class="ab-sub">Transactions</div>
+                  </div>
+                </button>
+                <button
+                  class="action-btn new-user-btn"
+                  onclick="goToCardSetup()"
+                >
+                  <div class="ab-icon">
+                    <svg viewBox="0 0 24 24">
+                      <rect x="2" y="5" width="20" height="14" rx="2" />
+                      <path d="M2 10h20" />
+                      <line x1="6" y1="15" x2="9" y2="15" />
+                      <line x1="13" y1="15" x2="18" y2="15" />
+                    </svg>
+                  </div>
+                  <div style="width: 100%">
+                    <div
+                      class="ab-label"
+                      style="text-align: center; width: 100%"
+                    >
+                      New User
+                    </div>
+                    <div class="ab-sub" style="text-align: center; width: 100%">
+                      Set up card & PIN
+                    </div>
                   </div>
                 </button>
               </div>
@@ -1805,6 +1887,169 @@
                 <button class="btn btn-yellow btn-full" onclick="loginNext()">
                   Continue →
                 </button>
+                <!-- Removed 'or' divider and 'New here? Set up your card & PIN' button -->
+              </div>
+            </div>
+          </div>
+
+          <!-- CARD SETUP — self-service first-time card + PIN wizard -->
+          <div class="page" id="page-card-setup">
+            <div class="login-split">
+              <!-- Left panel -->
+              <div class="login-left">
+                <div>
+                  <div class="login-left-title">Card Setup</div>
+                  <div class="login-left-sub" style="margin-top: 4px">
+                    First-time setup for new customers
+                  </div>
+                </div>
+                <div class="login-steps">
+                  <div class="lstep active" id="cs-step1">
+                    <div class="lstep-dot">1</div>
+                    <div class="lstep-label">Account number</div>
+                  </div>
+                  <div class="lstep" id="cs-step2">
+                    <div class="lstep-dot">2</div>
+                    <div class="lstep-label">Set PIN</div>
+                  </div>
+                  <div class="lstep" id="cs-step3">
+                    <div class="lstep-dot">3</div>
+                    <div class="lstep-label">Card active</div>
+                  </div>
+                </div>
+                <button
+                  class="btn btn-ghost btn-sm"
+                  onclick="
+                    goTo('idle');
+                    resetCardSetup();
+                  "
+                >
+                  Cancel
+                </button>
+              </div>
+
+              <!-- Right panel -->
+              <div class="login-right" id="cs-right">
+                <!-- Step 1: account number -->
+                <div id="cs-panel-account">
+                  <div class="login-heading">Enter your account number</div>
+                  <div class="login-sub-text" id="cs-sub-account">
+                    Your bank gave you an IBAN starting with <strong>DE</strong>
+                  </div>
+                  <div class="error-box" id="cs-error-account"></div>
+                  <div class="field">
+                    <label>IBAN Account Number</label>
+                    <input
+                      type="text"
+                      id="cs-input-account"
+                      placeholder="DE00 0000 0000 0000 0000 00"
+                      maxlength="27"
+                      autocomplete="off"
+                      oninput="
+                        this.value = this.value
+                          .toUpperCase()
+                          .replace(/[^A-Z0-9]/g, '')
+                      "
+                      onkeydown="if (event.key === 'Enter') csNext();"
+                    />
+                  </div>
+                  <button class="btn btn-yellow btn-full" onclick="csNext()">
+                    Continue →
+                  </button>
+                </div>
+
+                <!-- Step 2: PIN entry (hidden until step 1 done) -->
+                <div id="cs-panel-pin" style="display: none">
+                  <div class="login-heading">Create your PIN</div>
+                  <div class="login-sub-text">
+                    Choose a 4-digit PIN. You'll confirm it below.
+                  </div>
+                  <div class="error-box" id="cs-error-pin"></div>
+                  <div class="field">
+                    <label>New PIN</label>
+                    <input
+                      type="password"
+                      id="cs-input-pin"
+                      placeholder="••••"
+                      maxlength="4"
+                      inputmode="numeric"
+                      onkeydown="
+                        if (event.key === 'Enter')
+                          document.getElementById('cs-input-pin2').focus();
+                      "
+                    />
+                  </div>
+                  <div class="field">
+                    <label>Confirm PIN</label>
+                    <input
+                      type="password"
+                      id="cs-input-pin2"
+                      placeholder="••••"
+                      maxlength="4"
+                      inputmode="numeric"
+                      onkeydown="if (event.key === 'Enter') csSubmitPin();"
+                    />
+                  </div>
+                  <button
+                    class="btn btn-yellow btn-full"
+                    onclick="csSubmitPin()"
+                    id="cs-pin-btn"
+                  >
+                    Activate card →
+                  </button>
+                </div>
+
+                <!-- Step 3: success (hidden until PIN set) -->
+                <div
+                  id="cs-panel-done"
+                  style="display: none; text-align: center"
+                >
+                  <div
+                    style="
+                      width: 64px;
+                      height: 64px;
+                      border-radius: 50%;
+                      background: rgba(46, 204, 135, 0.12);
+                      border: 1px solid rgba(46, 204, 135, 0.25);
+                      display: flex;
+                      align-items: center;
+                      justify-content: center;
+                      margin: 0 auto 20px;
+                    "
+                  >
+                    <svg
+                      width="28"
+                      height="28"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#2ecc87"
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                    >
+                      <path d="M20 6L9 17l-5-5" />
+                    </svg>
+                  </div>
+                  <div class="login-heading" style="text-align: center">
+                    Card activated!
+                  </div>
+                  <div
+                    class="login-sub-text"
+                    style="text-align: center"
+                    id="cs-done-card"
+                  >
+                    Your card and PIN are ready.
+                  </div>
+                  <button
+                    class="btn btn-yellow btn-full"
+                    onclick="
+                      goTo('idle');
+                      resetCardSetup();
+                    "
+                    style="margin-top: 24px"
+                  >
+                    Go to login →
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -3026,6 +3271,150 @@
         document.addEventListener(ev,resetIdle,{passive:true});
       });
       resetIdle();
+
+      // ── Card setup state ───────────────────────────────────────────
+      var _csCardId = null;
+
+      function goToCardSetup() {
+        resetCardSetup();
+        goTo('card-setup');
+      }
+
+      function resetCardSetup() {
+        _csCardId = null;
+        // Reset steps
+        document.getElementById('cs-step1').className = 'lstep active';
+        document.getElementById('cs-step2').className = 'lstep';
+        document.getElementById('cs-step3').className = 'lstep';
+        // Show account panel, hide others
+        document.getElementById('cs-panel-account').style.display = '';
+        document.getElementById('cs-panel-pin').style.display     = 'none';
+        document.getElementById('cs-panel-done').style.display    = 'none';
+        // Clear inputs and errors
+        document.getElementById('cs-input-account').value = '';
+        document.getElementById('cs-input-pin').value     = '';
+        document.getElementById('cs-input-pin2').value    = '';
+        document.getElementById('cs-error-account').classList.remove('show');
+        document.getElementById('cs-error-pin').classList.remove('show');
+        document.getElementById('cs-pin-btn').disabled = false;
+      }
+
+      // Step 1 — submit account number, request card creation
+      function csNext() {
+        var acct = document.getElementById('cs-input-account').value.trim().toUpperCase().replace(/\s/g,'');
+        var err  = document.getElementById('cs-error-account');
+        err.classList.remove('show');
+
+        if (!acct) {
+          err.textContent = 'Please enter your account number.';
+          err.classList.add('show');
+          return;
+        }
+        // Basic DE IBAN check: DE + 20 digits
+        if (!/^DE\d{20}$/.test(acct)) {
+          err.textContent = 'Invalid format. Should be DE followed by 20 digits (22 characters total).';
+          err.classList.add('show');
+          return;
+        }
+
+        err.textContent = 'Creating your card…';
+        err.style.background = 'rgba(74,144,232,0.08)';
+        err.style.borderColor = 'rgba(74,144,232,0.2)';
+        err.style.color = '#4a90e8';
+        err.classList.add('show');
+
+        fetch('/card-setup/create', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({accountNumber: acct})
+        })
+        .then(function(r) { return r.json().then(function(d){return {ok:r.ok,d:d};}); })
+        .then(function(res) {
+          err.classList.remove('show');
+          err.style.background = '';
+          err.style.borderColor = '';
+          err.style.color = '';
+
+          if (!res.ok) {
+            err.textContent = res.d.error || res.d.detail || 'Card creation failed. Check your account number.';
+            err.classList.add('show');
+            return;
+          }
+
+          _csCardId = res.d.cardId;
+
+          // Advance to PIN step
+          document.getElementById('cs-step1').className = 'lstep done';
+          document.getElementById('cs-step2').className = 'lstep active';
+          document.getElementById('cs-panel-account').style.display = 'none';
+          document.getElementById('cs-panel-pin').style.display     = '';
+          document.getElementById('cs-input-pin').focus();
+        })
+        .catch(function() {
+          err.style.background = '';
+          err.style.borderColor = '';
+          err.style.color = '';
+          err.textContent = 'Cannot reach server. Please try again.';
+          err.classList.add('show');
+        });
+      }
+
+      // Step 2 — submit PIN
+      function csSubmitPin() {
+        var pin  = document.getElementById('cs-input-pin').value.trim();
+        var pin2 = document.getElementById('cs-input-pin2').value.trim();
+        var err  = document.getElementById('cs-error-pin');
+        err.classList.remove('show');
+
+        if (!pin || !pin2) {
+          err.textContent = 'Please enter and confirm your PIN.';
+          err.classList.add('show');
+          return;
+        }
+        if (!/^\d{4}$/.test(pin)) {
+          err.textContent = 'PIN must be exactly 4 digits.';
+          err.classList.add('show');
+          return;
+        }
+        if (pin !== pin2) {
+          err.textContent = 'PINs do not match. Please try again.';
+          err.classList.add('show');
+          document.getElementById('cs-input-pin2').value = '';
+          document.getElementById('cs-input-pin2').focus();
+          return;
+        }
+
+        document.getElementById('cs-pin-btn').disabled = true;
+
+        fetch('/card-setup/set-pin', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({cardId: _csCardId, pin: pin, pinConfirm: pin2})
+        })
+        .then(function(r) { return r.json().then(function(d){return {ok:r.ok,d:d};}); })
+        .then(function(res) {
+          if (!res.ok) {
+            document.getElementById('cs-pin-btn').disabled = false;
+            err.textContent = res.d.error || res.d.detail || 'PIN setup failed. Please try again.';
+            err.classList.add('show');
+            return;
+          }
+
+          // Success
+          document.getElementById('cs-step2').className = 'lstep done';
+          document.getElementById('cs-step3').className = 'lstep done';
+          document.getElementById('cs-panel-pin').style.display  = 'none';
+          document.getElementById('cs-panel-done').style.display = '';
+          var masked = res.d.maskedNumber || '**** **** **** ????';
+          document.getElementById('cs-done-card').textContent =
+            'Card ' + masked + ' is ready. You can now log in.';
+        })
+        .catch(function() {
+          document.getElementById('cs-pin-btn').disabled = false;
+          err.textContent = 'Cannot reach server. Please try again.';
+          err.classList.add('show');
+        });
+      }
     </script>
   </body>
 </html>

@@ -145,7 +145,9 @@ def _chain_status_counts(txns: list) -> dict:
 
 def _fetch_dashboard_stats() -> dict:
     customers_resp = _cb("get", "/customers")
-    customers = customers_resp.json() if customers_resp and customers_resp.ok else []
+    customers_data = customers_resp.json() if customers_resp and customers_resp.ok else {}
+    customers = customers_data.get("content", [])
+
     txns = _fetch_all_transactions()
     counts = _chain_status_counts(txns)
     return {
@@ -231,9 +233,26 @@ def dashboard():
 @app.route("/customers")
 @login_required
 def customers():
-    resp = _cb("get", "/customers")
-    customer_list = resp.json() if resp and resp.ok else []
-    return render_template("customers.html", customers=customer_list)
+    page = request.args.get("page", 0)
+
+    resp = _cb("get", "/customers", params={"page": page, "size": 50})
+
+    if resp and resp.ok:
+        data = resp.json()
+        customer_list = data.get("content", [])
+        total_pages = data.get("totalPages", 1)
+        current_page = data.get("number", 0)
+    else:
+        customer_list = []
+        total_pages = 1
+        current_page = 0
+
+    return render_template(
+        "customers.html",
+        customers=customer_list,
+        total_pages=total_pages,
+        current_page=current_page,
+    )
 
 
 @app.route("/customers/register", methods=["GET", "POST"])
@@ -241,9 +260,9 @@ def customers():
 def register_customer():
     if request.method == "GET":
         return render_template("register.html")
-
+ 
     f = request.form
-
+ 
     # Step 1: Create customer
     customer_payload = {
         "firstName":   f.get("firstName", "").strip(),
@@ -257,59 +276,65 @@ def register_customer():
     if not resp1 or not resp1.ok:
         detail = resp1.text[:200] if resp1 else "Core Banking unreachable"
         flash(f"Customer creation failed: {detail}")
-        return render_template("register.html")
-
+        return render_template("register.html", form=f)
+ 
     customer = resp1.json()
     customer_id = customer["customerId"]
-
-    # Step 2: Create account
+ 
+    # Step 2: Create account with initial balance (usually 0)
     try:
         initial_balance = float(f.get("initialBalance", "0") or "0")
     except ValueError:
         initial_balance = 0.0
-
+ 
     resp2 = _cb("post", f"/customers/{customer_id}/accounts",
                 json={"initialBalance": initial_balance})
     if not resp2 or not resp2.ok:
         detail = resp2.text[:200] if resp2 else "Core Banking unreachable"
         flash(f"Account creation failed: {detail} — customer created (id={customer_id})")
-        return render_template("register.html")
-
+        return render_template("register.html", form=f)
+ 
     account = resp2.json()
-
-    # Step 3: Issue a card
-    resp_card = _cb("post", f"/accounts/{account['accountId']}/cards",
-                    json={"holderName": f"{f.get('firstName','')} {f.get('lastName','')}".strip()})
-    if not resp_card or not resp_card.ok:
-        flash("Card issuance failed — customer and account created but no card/PIN set.")
-        return render_template("register.html")
-
-    card = resp_card.json()
-
-    # Step 4: Set PIN on the card
-    pin = f.get("pin", "").strip()
-    if not pin or len(pin) != 4 or not pin.isdigit():
-        flash("PIN must be exactly 4 digits — customer, account and card created but PIN not set.")
-        return render_template("register.html")
-
-    resp3 = _cb("post", "/atm/set-pin",
-        json={"cardId": str(card["cardId"]), "pin": pin})
-    if not resp3 or not resp3.ok:
-        try:
-            detail = resp3.json().get("error", resp3.text) if resp3 else "Core Banking unreachable"
-        except Exception:
-            detail = resp3.text if resp3 else "Core Banking unreachable"
-        flash(f"PIN set failed: {detail} — customer, account and card created but PIN not set.")
-        return render_template("register.html")
-
+    account_number = account.get("accountNumber", "—")
+ 
+    # Done — no card or PIN is set by admin.
+    # The customer will create their card and PIN at the ATM.
     flash(
-        f"Customer registered successfully! "
-        f"Account: {account['accountNumber']}. "
-        f"Card: **** **** **** {card['cardNumber'][-4:]}. "
-        f"PIN set."
+        f"Customer registered successfully. "
+        f"Account: {account_number}. "
+        f"Tell the customer to visit the ATM and select 'New card setup' to create their card and PIN."
     )
     return redirect(url_for("customers"))
 
+
+# ── Register Account for Existing Customer ───────────────────────────────
+@app.route("/customers/<int:customer_id>/register-account", methods=["GET", "POST"])
+@login_required
+def register_account(customer_id):
+    if request.method == "GET":
+        # Fetch customer info for display
+        resp = _cb("get", f"/customers/{customer_id}")
+        customer = resp.json() if resp and resp.ok else {}
+        return render_template(
+            "register_account.html",
+            customer=customer,
+            customer_id=customer_id,
+        )
+
+    # POST: create account
+    initial_balance = request.form.get("initialBalance", "0").strip()
+    try:
+        initial_balance = float(initial_balance)
+    except ValueError:
+        initial_balance = 0.0
+    resp = _cb("post", f"/customers/{customer_id}/accounts", json={"initialBalance": initial_balance})
+    if not resp or not resp.ok:
+        flash("Failed to register account. Please try again.", "error")
+        return redirect(url_for("customers"))
+    account = resp.json()
+    account_number = account.get("accountNumber", "—")
+    flash(f"Account registered successfully. Account: {account_number}")
+    return redirect(url_for("customers"))
 
 # ── Transactions ──────────────────────────────────────────────────────────────
 
@@ -456,7 +481,9 @@ def blocked_accounts_list():
         return jsonify({"error": "Cannot fetch customers"}), 503
 
     blocked = []
-    for customer in customers_resp.json():
+    
+    customers_page = customers_resp.json()
+    for customer in customers_page.get("content", []):
         cid = customer.get("customerId")
         if not cid:
             continue

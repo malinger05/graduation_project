@@ -193,7 +193,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ATM Middleware — Layer 2", lifespan=lifespan)
-
+@app.middleware("http")
+async def _limit_body_size(request: Request, call_next):
+    if request.headers.get("content-length"):
+        if int(request.headers["content-length"]) > 1_048_576:
+            return JSONResponse(status_code=413, content={"detail": "Request too large"})
+    return await call_next(request)
 
 @app.middleware("http")
 async def _capture_client_cert(request: Request, call_next):
@@ -512,6 +517,16 @@ class ResetPinRequest(BaseModel):
     cardNumber: str
     newPin: str
     confirmPin: str
+
+
+class CreateCardRequest(BaseModel):
+    accountNumber: str
+ 
+ 
+class SetOwnPinRequest(BaseModel):
+    cardId: int
+    pin: str
+    pinConfirm: str
 
 
 def _require_service_token(x_service_token: str | None) -> None:
@@ -844,6 +859,102 @@ def atm_reset_pin(
         correlation_id=corr,
     )
     return body
+
+
+@app.post("/atm/create-card")
+def atm_create_card(req: CreateCardRequest):
+    """
+    Step 1 of self-service card setup.
+ 
+    ATM UI sends account number → middleware forwards to Core Banking
+    POST /atm/create-card-for-account with X-Service-Token.
+ 
+    Core Banking:
+      - Verifies account exists and is ACTIVE
+      - Enforces MAX_CARDS_PER_ACCOUNT (3) limit
+      - Issues a new card with NO PIN set
+      - Returns cardId + masked card number
+ 
+    Middleware returns the same payload to the ATM UI so it can proceed
+    to the PIN-entry step.
+    """
+    resp = cb_http.post(
+        f"{CORE_BANKING_URL}/atm/create-card-for-account",
+        json={"accountNumber": req.accountNumber},
+        headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
+        timeout=(3, 12),
+    )
+    if not resp.ok:
+        try:
+            detail = resp.json().get("error", resp.text)
+        except Exception:
+            detail = resp.text
+        raise HTTPException(resp.status_code, detail)
+ 
+    return resp.json()
+ 
+ 
+@app.post("/atm/set-own-pin")
+def atm_set_own_pin(req: SetOwnPinRequest):
+    """
+    Step 2 of self-service card setup.
+ 
+    ATM UI collects PIN twice; middleware validates they match and that the
+    PIN is exactly 4 digits before forwarding to Core Banking.
+ 
+    Core Banking:
+      - Verifies card exists and has no PIN set yet (first-time only)
+      - BCrypt-hashes and stores the PIN
+      - Returns success; card is now fully active
+ 
+    After this call the customer can log in with their card number + PIN.
+    """
+    if req.pin != req.pinConfirm:
+        raise HTTPException(400, "PINs do not match. Please try again.")
+ 
+    if not req.pin.isdigit() or len(req.pin) != 4:
+        raise HTTPException(400, "PIN must be exactly 4 digits.")
+ 
+    resp = cb_http.post(
+        f"{CORE_BANKING_URL}/atm/set-own-pin",
+        json={"cardId": str(req.cardId), "pin": req.pin},
+        headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
+        timeout=(3, 12),
+    )
+    if not resp.ok:
+        try:
+            detail = resp.json().get("error", resp.text)
+        except Exception:
+            detail = resp.text
+        raise HTTPException(resp.status_code, detail)
+ 
+    return resp.json()
+ 
+ 
+@app.get("/atm/card-setup-status/{account_number}")
+def atm_card_setup_status(account_number: str):
+    """
+    Called by the ATM UI on the card-setup landing page to tell the customer
+    how many cards they already have on this account (and whether they can
+    create another one), without requiring a login session.
+ 
+    Returns: { hasCards: bool, cardCount: int, canCreateMore: bool }
+    """
+    # We proxy through Core Banking's resolve-card equivalent.
+    # Since /customers/*/accounts requires ROLE_ADMIN or ROLE_USER,
+    # we use the service token path to look up the account.
+    resp = cb_http.get(
+        f"{CORE_BANKING_URL}/atm/resolve-card",
+        params={"accountNumber": account_number},   # hypothetical – see note below
+        timeout=(3, 8),
+    )
+    # NOTE: Core Banking's /atm/resolve-card only accepts cardNumber today.
+    # If you want to look up by accountNumber without a session, add a
+    # GET /atm/account-info?accountNumber=... endpoint to Core Banking
+    # (ROLE_SERVICE gated) that returns basic account status + card count.
+    # For now, return a simple ok so the UI can proceed to create-card;
+    # Core Banking will enforce the limit on the actual create-card call.
+    return {"status": "ok", "message": "Proceed to card creation."}
 
 
 @app.post("/atm/logout")

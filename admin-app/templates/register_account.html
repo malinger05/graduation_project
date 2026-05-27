@@ -1,0 +1,38 @@
+{% extends "base.html" %} {% block title %}Register Account{% endblock %} {%
+block page_title %}Register Account{% endblock %} {% block body %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Register Account for Customer #{{ customer_id }}</h1>
+    <p class="page-sub">
+      {{ customer.firstName }} {{ customer.lastName }} ({{ customer.email }})
+    </p>
+  </div>
+</div>
+
+<div class="card" style="max-width: 400px; margin: 0 auto">
+  <form method="post">
+    <div class="field">
+      <label for="initialBalance">Initial Balance</label>
+      <input
+        type="number"
+        step="0.01"
+        min="0"
+        name="initialBalance"
+        id="initialBalance"
+        class="form-control"
+        value="0"
+        required
+      />
+    </div>
+    <button type="submit" class="btn btn-primary" style="margin-top: 18px">
+      Register Account
+    </button>
+    <a
+      href="{{ url_for('customers') }}"
+      class="btn btn-ghost btn-sm"
+      style="margin-left: 10px"
+      >Cancel</a
+    >
+  </form>
+</div>
+{% endblock %}

@@ -43,13 +43,15 @@ class ClientCertInfo:
 
 
 def normalize_serial(raw: str | None) -> str | None:
-    """Normalize OpenSSL / Caddy serial strings for comparison."""
     if not raw:
         return None
     s = raw.strip()
     if s.lower().startswith("serial="):
         s = s.split("=", 1)[1].strip()
     s = s.replace(":", "").upper()
+    # Convert decimal serial (from Caddy) to hex to match OpenSSL format
+    if s.isdigit():
+        s = format(int(s), "X")
     return s or None
 
 

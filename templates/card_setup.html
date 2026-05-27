@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+{% block title %}Card Setup — ATM{% endblock %}
+
+{% block body %}
+<div class="setup-shell">
+
+  {% if step == "account" %}
+  <!-- ── Step 1: Enter account number ───────────────────────────────────── -->
+  <div class="setup-hero red-hero">
+    <div class="setup-hero-inner">
+      <h1 class="setup-headline">New card setup</h1>
+      <p class="setup-sub">Enter your IBAN account number to get started</p>
+    </div>
+  </div>
+
+  <div class="setup-body">
+    <div class="setup-body-inner">
+
+      <div class="info-box">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+        Your account number was given to you by the bank when you registered. It starts with <strong>DE</strong> followed by 20 digits.
+      </div>
+
+      <form method="post" action="{{ url_for('card_setup') }}" id="account-form">
+        <input type="hidden" name="step" value="account">
+        <div class="amount-field">
+          <label class="field-label">IBAN account number</label>
+          <div class="field-input-wrap red-focus">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
+            <input
+              type="text"
+              name="account_number"
+              placeholder="DE00000000000000000000"
+              maxlength="22"
+              autocomplete="off"
+              autofocus
+              required
+              style="font-family:var(--mono);font-size:16px;letter-spacing:0.05em;">
+          </div>
+        </div>
+
+        <div class="tx-actions">
+          <a href="{{ url_for('login') }}" class="tx-back">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            Back to login
+          </a>
+          <button type="submit" class="tx-confirm red">
+            Continue
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </button>
+        </div>
+      </form>
+
+    </div>
+  </div>
+
+  {% elif step == "pin" %}
+  <!-- ── Step 2: Set PIN ────────────────────────────────────────────────── -->
+  <div class="setup-hero green-hero">
+    <div class="setup-hero-inner">
+      <h1 class="setup-headline">Set your PIN</h1>
+      <p class="setup-sub">Card issued: <span style="font-family:var(--mono);">{{ masked_card }}</span></p>
+    </div>
+  </div>
+
+  <div class="setup-body">
+    <div class="setup-body-inner">
+
+      <div class="info-box green-info">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+        Your card has been created. Choose a 4-digit PIN to activate it. Do not use obvious combinations like 1234 or your birth year.
+      </div>
+
+      <form method="post" action="{{ url_for('card_setup') }}" id="pin-form">
+        <input type="hidden" name="step" value="pin">
+        <input type="hidden" name="card_id" value="{{ card_id }}">
+
+        <div class="pin-grid">
+          <div class="field">
+            <label class="field-label">New PIN (4 digits)</label>
+            <div class="field-input-wrap green-focus">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+              <input
+                type="password"
+                name="pin"
+                id="pin-input"
+                placeholder="••••"
+                maxlength="4"
+                inputmode="numeric"
+                autofocus
+                required>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field-label">Confirm PIN</label>
+            <div class="field-input-wrap green-focus">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+              <input
+                type="password"
+                name="pin_confirm"
+                id="pin-confirm-input"
+                placeholder="••••"
+                maxlength="4"
+                inputmode="numeric"
+                required>
+            </div>
+          </div>
+        </div>
+
+        <div id="pin-mismatch" class="form-error" style="display:none;">
+          PINs do not match. Please re-enter.
+        </div>
+
+        <div class="tx-actions">
+          <a href="{{ url_for('card_setup') }}" class="tx-back">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            Back
+          </a>
+          <button type="submit" class="tx-confirm green" id="pin-submit">
+            Activate card
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </button>
+        </div>
+      </form>
+
+    </div>
+  </div>
+
+  {% elif step == "done" %}
+  <!-- ── Step 3: Success ────────────────────────────────────────────────── -->
+  <div class="setup-done-shell">
+    <div class="done-card">
+      <div class="done-icon">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#2ECC87" stroke-width="2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+      </div>
+      <h2 class="done-title">Card activated!</h2>
+      <p class="done-card-num">{{ masked_card }}</p>
+      <p class="done-sub">Your card and PIN are set. You can now log in using your card number and PIN.</p>
+      <a href="{{ url_for('login') }}" class="tx-confirm green" style="display:flex;align-items:center;justify-content:space-between;border-radius:12px;padding:16px 24px;font-size:15px;font-weight:500;text-decoration:none;margin-top:24px;">
+        Go to login
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </a>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+
+<style>
+/* ── Shell ─────────────────────────────────────────────── */
+.setup-shell { display:flex; flex-direction:column; min-height:calc(100vh - 60px); }
+
+/* ── Hero ──────────────────────────────────────────────── */
+.setup-hero { background:var(--navy2); border-bottom:1px solid var(--border); padding:32px 48px; }
+.red-hero   { border-bottom-color:rgba(232,25,60,0.15); }
+.green-hero { border-bottom-color:rgba(61,184,138,0.15); }
+.setup-hero-inner { max-width:700px; margin:0 auto; }
+.setup-headline { font-size:32px; font-weight:300; letter-spacing:-0.01em; margin-bottom:6px; }
+.setup-sub { font-size:13px; color:var(--muted); }
+
+/* ── Body ──────────────────────────────────────────────── */
+.setup-body { flex:1; padding:48px; }
+.setup-body-inner { max-width:560px; margin:0 auto; display:flex; flex-direction:column; gap:28px; }
+
+/* ── Info box ──────────────────────────────────────────── */
+.info-box {
+  display:flex; align-items:flex-start; gap:10px;
+  background:rgba(74,144,232,0.06); border:1px solid rgba(74,144,232,0.15);
+  border-radius:10px; padding:14px 16px;
+  font-size:12px; color:var(--muted); line-height:1.6;
+}
+.info-box svg { flex-shrink:0; margin-top:1px; color:#4a90e8; }
+.green-info { background:rgba(61,184,138,0.06); border-color:rgba(61,184,138,0.15); }
+.green-info svg { color:var(--green); }
+
+/* ── Field ─────────────────────────────────────────────── */
+.field-label {
+  font-size:11px; font-weight:500; letter-spacing:0.1em; text-transform:uppercase;
+  color:var(--muted); display:block; margin-bottom:8px;
+}
+.field-input-wrap {
+  display:flex; align-items:center; gap:12px;
+  background:rgba(255,255,255,0.04); border:1px solid var(--border);
+  border-radius:10px; padding:0 16px; transition:border-color 0.2s;
+}
+.field-input-wrap:focus-within { border-color:rgba(255,255,255,0.2); background:rgba(255,255,255,0.06); }
+.red-focus:focus-within   { border-color:rgba(232,25,60,0.3); }
+.green-focus:focus-within { border-color:rgba(61,184,138,0.3); }
+.field-input-wrap svg { color:var(--muted); flex-shrink:0; }
+.field-input-wrap input {
+  background:transparent; border:none; outline:none;
+  color:var(--text); font-size:15px; font-family:var(--sans);
+  padding:14px 0; width:100%;
+}
+.field-input-wrap input::placeholder { color:#2a3848; }
+
+/* ── PIN grid ──────────────────────────────────────────── */
+.pin-grid { display:flex; flex-direction:column; gap:16px; }
+
+/* ── Actions ───────────────────────────────────────────── */
+.tx-actions { display:grid; grid-template-columns:1fr 2fr; gap:12px; margin-top:8px; }
+.tx-back {
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  background:var(--navy2); border:1px solid var(--border); color:var(--muted);
+  border-radius:12px; padding:16px; font-size:15px; font-weight:500;
+  text-decoration:none; transition:all 0.2s;
+}
+.tx-back:hover { color:var(--text); border-color:rgba(255,255,255,0.18); }
+.tx-confirm {
+  display:flex; align-items:center; justify-content:space-between;
+  border:none; border-radius:12px; padding:16px 24px; font-size:15px;
+  font-weight:500; font-family:var(--sans); cursor:pointer; transition:opacity 0.2s;
+}
+.tx-confirm.red   { background:var(--red); color:#fff; }
+.tx-confirm.red:hover { opacity:0.88; }
+.tx-confirm.green { background:var(--green); color:#fff; }
+.tx-confirm.green:hover { opacity:0.88; }
+
+/* ── Form error ────────────────────────────────────────── */
+.form-error {
+  background:rgba(232,25,60,0.08); border:1px solid rgba(232,25,60,0.18);
+  color:#e07070; border-radius:8px; padding:10px 14px; font-size:12px;
+}
+
+/* ── Done card ─────────────────────────────────────────── */
+.setup-done-shell {
+  display:flex; align-items:center; justify-content:center;
+  min-height:calc(100vh - 60px); padding:40px;
+}
+.done-card {
+  background:var(--navy2); border:1px solid rgba(61,184,138,0.2);
+  border-radius:20px; padding:52px 48px; text-align:center;
+  max-width:420px; width:100%;
+}
+.done-icon {
+  width:64px; height:64px; border-radius:50%;
+  background:rgba(61,184,138,0.1); border:1px solid rgba(61,184,138,0.2);
+  display:flex; align-items:center; justify-content:center;
+  margin:0 auto 20px;
+}
+.done-title { font-size:26px; font-weight:300; margin-bottom:8px; }
+.done-card-num { font-family:var(--mono); font-size:14px; color:var(--muted); margin-bottom:14px; }
+.done-sub { font-size:13px; color:var(--muted); line-height:1.6; }
+</style>
+
+<script>
+(function () {
+  const form    = document.getElementById('pin-form');
+  const pin     = document.getElementById('pin-input');
+  const confirm = document.getElementById('pin-confirm-input');
+  const err     = document.getElementById('pin-mismatch');
+  const btn     = document.getElementById('pin-submit');
+  if (!form) return;
+
+  form.addEventListener('submit', function (e) {
+    if (pin.value !== confirm.value) {
+      e.preventDefault();
+      err.style.display = 'block';
+      confirm.focus();
+      return;
+    }
+    err.style.display = 'none';
+    if (btn) btn.disabled = true;
+  });
+
+  [pin, confirm].forEach(function (el) {
+    el.addEventListener('input', function () {
+      if (err) err.style.display = 'none';
+    });
+  });
+})();
+</script>
+{% endblock %}

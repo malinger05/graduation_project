@@ -64,7 +64,7 @@ def _evict_atm_session(atm_key: str) -> None:
                 mw_http.post(
                     f"{client.base_url}/atm/logout",
                     headers={"x-session-token": client._session_token},
-                    timeout=5,
+                    timeout=60,
                 )
         except Exception:
             pass
@@ -333,6 +333,229 @@ def login():
     })
 
 
+@app.route("/card-setup", methods=["GET", "POST"])
+def card_setup():
+    """
+    Three-step wizard:
+      step=account  → customer enters IBAN account number
+      step=pin      → customer sets PIN twice
+      step=done     → success screen
+    """
+    if request.method == "GET":
+        return render_template("card_setup.html", step="account")
+ 
+    step = request.form.get("step", "account")
+ 
+    # ── Step 1: customer submits account number ────────────────────────────────
+    if step == "account":
+        account_number = (request.form.get("account_number") or "").strip().upper()
+ 
+        if not account_number:
+            flash("Please enter your account number.")
+            return render_template("card_setup.html", step="account")
+ 
+        # Basic IBAN format check (DE + 20 digits = 22 chars)
+        if not account_number.startswith("DE") or len(account_number) != 22 or not account_number[2:].isdigit():
+            flash("Invalid account number format. It should start with DE followed by 20 digits.")
+            return render_template("card_setup.html", step="account")
+ 
+        # Call middleware → Core Banking to create the card
+        try:
+            resp = mw_http.post(
+                f"{MIDDLEWARE_URL}/atm/create-card",
+                json={"accountNumber": account_number},
+                timeout=(5, 15),
+            )
+        except Exception as e:
+            flash("Cannot reach the banking system. Please try again.")
+            return render_template("card_setup.html", step="account")
+ 
+        if resp.status_code == 404:
+            flash("Account number not found. Please check the number given to you by the bank.")
+            return render_template("card_setup.html", step="account")
+ 
+        if not resp.ok:
+            try:
+                detail = resp.json().get("error") or resp.json().get("detail") or resp.text
+            except Exception:
+                detail = resp.text
+            flash(f"Card creation failed: {detail}")
+            return render_template("card_setup.html", step="account")
+ 
+        data = resp.json()
+        card_id     = data.get("cardId")
+        masked_card = data.get("maskedNumber", "**** **** **** ????")
+ 
+        return render_template(
+            "card_setup.html",
+            step="pin",
+            card_id=card_id,
+            masked_card=masked_card,
+        )
+ 
+    # ── Step 2: customer submits PIN ──────────────────────────────────────────
+    if step == "pin":
+        card_id     = request.form.get("card_id", "")
+        pin         = request.form.get("pin", "").strip()
+        pin_confirm = request.form.get("pin_confirm", "").strip()
+ 
+        if not card_id:
+            flash("Session lost. Please start again.")
+            return render_template("card_setup.html", step="account")
+ 
+        # Client-side JS already checks this, but validate server-side too
+        if pin != pin_confirm:
+            flash("PINs do not match. Please try again.")
+            return render_template(
+                "card_setup.html",
+                step="pin",
+                card_id=card_id,
+                masked_card=request.form.get("masked_card", ""),
+            )
+ 
+        if not pin.isdigit() or len(pin) != 4:
+            flash("PIN must be exactly 4 digits.")
+            return render_template(
+                "card_setup.html",
+                step="pin",
+                card_id=card_id,
+                masked_card=request.form.get("masked_card", ""),
+            )
+ 
+        try:
+            resp = mw_http.post(
+                f"{MIDDLEWARE_URL}/atm/set-own-pin",
+                json={"cardId": int(card_id), "pin": pin, "pinConfirm": pin_confirm},
+                timeout=(5, 15),
+            )
+        except Exception:
+            flash("Cannot reach the banking system. Please try again.")
+            return render_template(
+                "card_setup.html",
+                step="pin",
+                card_id=card_id,
+                masked_card=request.form.get("masked_card", ""),
+            )
+ 
+        if not resp.ok:
+            try:
+                detail = resp.json().get("error") or resp.json().get("detail") or resp.text
+            except Exception:
+                detail = resp.text
+            flash(f"PIN setup failed: {detail}")
+            return render_template(
+                "card_setup.html",
+                step="pin",
+                card_id=card_id,
+                masked_card=request.form.get("masked_card", ""),
+            )
+ 
+        data = resp.json()
+        masked_card = data.get("maskedNumber", "**** **** **** ????")
+ 
+        return render_template("card_setup.html", step="done", masked_card=masked_card)
+ 
+    # Fallback — unknown step
+    return redirect(url_for("card_setup"))
+
+"""
+customer_app.py — ADD these two routes.
+
+These serve the fetch() calls from the SPA in atm.html.
+They do NOT render templates — they return JSON.
+
+Also make sure `from flask import jsonify` is imported (it already is in the original).
+"""
+
+from flask import jsonify, request
+import mw_http
+from atm_architecture import MIDDLEWARE_URL
+
+
+@app.route("/card-setup/create", methods=["POST"])
+def card_setup_create():
+    """
+    Step 1 of self-service card setup.
+    ATM SPA POSTs { accountNumber } here.
+    We forward to middleware → Core Banking to create the card.
+    Returns JSON: { cardId, maskedNumber, accountNumber } or { error }
+    """
+    data           = request.get_json(silent=True) or {}
+    account_number = (data.get("accountNumber") or "").strip().upper()
+
+    if not account_number:
+        return jsonify({"error": "accountNumber is required"}), 400
+
+    # Basic format guard (DE + 20 digits)
+    import re
+    if not re.match(r"^DE\d{20}$", account_number):
+        return jsonify({"error": "Invalid account number format. Must be DE followed by 20 digits."}), 400
+
+    try:
+        resp = mw_http.post(
+            f"{MIDDLEWARE_URL}/atm/create-card",
+            json={"accountNumber": account_number},
+            timeout=(5, 15),
+        )
+    except Exception:
+        return jsonify({"error": "Cannot reach banking system. Please try again."}), 503
+
+    try:
+        body = resp.json()
+    except Exception:
+        body = {}
+
+    if not resp.ok:
+        error_msg = body.get("error") or body.get("detail") or "Card creation failed."
+        return jsonify({"error": error_msg}), resp.status_code
+
+    return jsonify(body), 201
+
+
+@app.route("/card-setup/set-pin", methods=["POST"])
+def card_setup_set_pin():
+    """
+    Step 2 of self-service card setup.
+    ATM SPA POSTs { cardId, pin, pinConfirm } here.
+    We validate match and format, then forward to middleware → Core Banking.
+    Returns JSON: { maskedNumber, message } or { error }
+    """
+    data       = request.get_json(silent=True) or {}
+    card_id    = data.get("cardId")
+    pin        = str(data.get("pin") or "").strip()
+    pin_confirm = str(data.get("pinConfirm") or "").strip()
+
+    if not card_id or not pin or not pin_confirm:
+        return jsonify({"error": "cardId, pin, and pinConfirm are required"}), 400
+
+    if pin != pin_confirm:
+        return jsonify({"error": "PINs do not match."}), 400
+
+    import re
+    if not re.match(r"^\d{4}$", pin):
+        return jsonify({"error": "PIN must be exactly 4 digits."}), 400
+
+    try:
+        resp = mw_http.post(
+            f"{MIDDLEWARE_URL}/atm/set-own-pin",
+            json={"cardId": int(card_id), "pin": pin, "pinConfirm": pin_confirm},
+            timeout=(5, 15),
+        )
+    except Exception:
+        return jsonify({"error": "Cannot reach banking system. Please try again."}), 503
+
+    try:
+        body = resp.json()
+    except Exception:
+        body = {}
+
+    if not resp.ok:
+        error_msg = body.get("error") or body.get("detail") or "PIN setup failed."
+        return jsonify({"error": error_msg}), resp.status_code
+
+    return jsonify(body), 200
+
+
 @app.route("/reset-pin", methods=["POST"])
 def reset_pin():
     card_number  = (request.form.get("card_number") or request.form.get("account") or "").strip()
@@ -383,7 +606,7 @@ def session_continue():
             resp = mw_http.post(
                 f"{MIDDLEWARE_URL}/atm/session/continue",
                 headers={"x-session-token": token},
-                timeout=5,
+                timeout=60,
             )
             if resp.status_code == 401:
                 session.clear()
@@ -548,7 +771,7 @@ def tx_status(transaction_id):
         resp = mw_http.get(
             f"{MIDDLEWARE_URL}/atm/tx-status/{transaction_id}",
             headers={"x-session-token": atm.accounts_repo.client._session_token},
-            timeout=5,
+            timeout=60,
         )
         return resp.json(), resp.status_code
     except Exception:
