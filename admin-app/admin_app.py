@@ -33,7 +33,16 @@ import admin_mw_http
 
 load_dotenv()
 
-CORE_BANKING_URL = os.environ.get("CORE_BANKING_URL", "http://localhost:8080").rstrip("/")
+# Local service calls must bypass system proxy settings (api.local/mw.local/localhost).
+_HTTP = _req.Session()
+_HTTP.trust_env = False
+
+# Admin → Core Banking: prefer explicit admin override, then shared CORE_BANKING_URL.
+# Default is mTLS path through Caddy.
+CORE_BANKING_URL = os.environ.get(
+    "ADMIN_CORE_BANKING_URL",
+    os.environ.get("CORE_BANKING_URL", "https://api.local"),
+).rstrip("/")
 # Admin → middleware: https://mw.local with admin-staff mTLS cert + X-Service-Token.
 MIDDLEWARE_DIRECT_URL = os.environ.get(
     "MIDDLEWARE_DIRECT_URL", "https://mw.local"
@@ -62,31 +71,29 @@ def _service_headers():
     return {"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"}
 
 
+def _core_call(method: str, path: str, headers: dict, timeout=(3, 15), **kwargs):
+    url = f"{CORE_BANKING_URL}{path}"
+    extra = admin_mw_http.request_kwargs(CORE_BANKING_URL, timeout=timeout)
+    merged_headers = dict(extra.pop("headers", {}) or {})
+    merged_headers.update(headers or {})
+    return getattr(_HTTP, method)(url, headers=merged_headers, **extra, **kwargs)
+
+
 def _cb(method, path, **kwargs):
     """Call Core Banking with JWT auth."""
     try:
-        resp = getattr(_req, method)(
-            f"{CORE_BANKING_URL}{path}",
-            headers=_jwt_headers(),
-            timeout=(3, 15),
-            **kwargs
-        )
+        resp = _core_call(method, path, headers=_jwt_headers(), timeout=(3, 15), **kwargs)
         return resp
-    except _req.exceptions.ConnectionError:
+    except (_req.exceptions.RequestException, RuntimeError):
         return None
 
 
 def _cb_service(method, path, **kwargs):
     """Call Core Banking with Service Token auth."""
     try:
-        resp = getattr(_req, method)(
-            f"{CORE_BANKING_URL}{path}",
-            headers=_service_headers(),
-            timeout=(3, 15),
-            **kwargs
-        )
+        resp = _core_call(method, path, headers=_service_headers(), timeout=(3, 15), **kwargs)
         return resp
-    except _req.exceptions.ConnectionError:
+    except (_req.exceptions.RequestException, RuntimeError):
         return None
 
 
@@ -184,12 +191,14 @@ def login():
 
     # Get JWT from Core Banking
     try:
-        resp = _req.post(
-            f"{CORE_BANKING_URL}/auth/login",
+        resp = _core_call(
+            "post",
+            "/auth/login",
+            headers={"Content-Type": "application/json"},
             json={"username": username, "password": password},
             timeout=(3, 10),
         )
-    except _req.exceptions.ConnectionError:
+    except (_req.exceptions.RequestException, RuntimeError):
         flash("Cannot reach Core Banking.")
         return render_template("login.html")
 
@@ -588,6 +597,16 @@ def update_card_status(card_id):
         detail = resp.text[:200] if resp else "Core Banking unreachable"
         return jsonify({"status": "error", "message": detail}), 502
     return jsonify(resp.json())
+
+@app.route("/admin/account/<int:account_id>/cards/<int:card_id>/send-email", methods=["POST"])
+@login_required
+def send_card_email(account_id, card_id):
+    """Resend card details + setup instructions email for a specific card."""
+    resp = _cb("post", f"/accounts/{account_id}/cards/{card_id}/send-email")
+    if not resp or not resp.ok:
+        detail = resp.text[:200] if resp else "Core Banking unreachable"
+        return jsonify({"status": "error", "message": detail}), 502
+    return jsonify({"status": "ok", "message": "Email sent."}), 200
 
 
 if __name__ == "__main__":

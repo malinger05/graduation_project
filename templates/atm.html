@@ -81,6 +81,22 @@
         align-items: center;
         gap: 9px;
       }
+      .brand-logo {
+        width: 120px;
+        height: auto;
+        display: block;
+        object-fit: contain;
+      }
+      .idle-logo-overlay {
+        position: absolute;
+        top: 18px;
+        left: 28px;
+        width: 350px;
+        height: auto;
+        object-fit: contain;
+        z-index: 2;
+        pointer-events: none;
+      }
       .brand-dot {
         width: 10px;
         height: 10px;
@@ -91,6 +107,7 @@
         font-size: 17px;
         font-weight: 800;
         color: var(--white);
+        display: none;
       }
       .header-info {
         display: flex;
@@ -1687,7 +1704,6 @@
         <!-- Header -->
         <div class="screen-header">
           <div class="brand">
-            <div class="brand-dot"></div>
             <span class="brand-name">Core Banking ATM</span>
           </div>
           <div class="header-info">
@@ -1710,6 +1726,11 @@
           <!-- IDLE -->
           <div class="page active" id="page-idle">
             <div class="idle-bg"></div>
+            <img
+              src="/static/bytebridge-bank-logo-final-v2.png"
+              alt="ByteBridge Bank"
+              class="idle-logo-overlay"
+            />
             <div class="idle-content">
               <div class="idle-icon">
                 <svg viewBox="0 0 24 24">
@@ -1828,10 +1849,10 @@
                       class="ab-label"
                       style="text-align: center; width: 100%"
                     >
-                      New User
+                      Set Card PIN
                     </div>
                     <div class="ab-sub" style="text-align: center; width: 100%">
-                      Set up card & PIN
+                      Activate issued card
                     </div>
                   </div>
                 </button>
@@ -1898,9 +1919,9 @@
               <!-- Left panel -->
               <div class="login-left">
                 <div>
-                  <div class="login-left-title">Card Setup</div>
+                  <div class="login-left-title">Card PIN Setup</div>
                   <div class="login-left-sub" style="margin-top: 4px">
-                    First-time setup for new customers
+                    Activate an admin-issued card
                   </div>
                 </div>
                 <div class="login-steps">
@@ -1934,7 +1955,7 @@
                 <div id="cs-panel-account">
                   <div class="login-heading">Enter your account number</div>
                   <div class="login-sub-text" id="cs-sub-account">
-                    Your bank gave you an IBAN starting with <strong>DE</strong>
+                    Use the account number provided by the bank
                   </div>
                   <div class="error-box" id="cs-error-account"></div>
                   <div class="field">
@@ -1961,10 +1982,40 @@
                 <!-- Step 2: PIN entry (hidden until step 1 done) -->
                 <div id="cs-panel-pin" style="display: none">
                   <div class="login-heading">Create your PIN</div>
-                  <div class="login-sub-text">
-                    Choose a 4-digit PIN. You'll confirm it below.
+                  <div class="login-sub-text" id="cs-sub-pin">
+                    For security, re-enter your account number, then choose a 4-digit PIN.
+                  </div>
+                  <div
+                    id="cs-issued-card"
+                    class="login-sub-text"
+                    style="display: none; margin-top: 8px"
+                  >
+                    Card to activate:
+                    <strong
+                      id="cs-issued-card-value"
+                      style="font-family: var(--mono); color: var(--text)"
+                    ></strong>
                   </div>
                   <div class="error-box" id="cs-error-pin"></div>
+                  <div class="field">
+                    <label>Confirm Account Number</label>
+                    <input
+                      type="text"
+                      id="cs-input-account-confirm"
+                      placeholder="DE00 0000 0000 0000 0000 00"
+                      maxlength="27"
+                      autocomplete="off"
+                      oninput="
+                        this.value = this.value
+                          .toUpperCase()
+                          .replace(/[^A-Z0-9]/g, '')
+                      "
+                      onkeydown="
+                        if (event.key === 'Enter')
+                          document.getElementById('cs-input-pin').focus();
+                      "
+                    />
+                  </div>
                   <div class="field">
                     <label>New PIN</label>
                     <input
@@ -3274,6 +3325,10 @@
 
       // ── Card setup state ───────────────────────────────────────────
       var _csCardId = null;
+      var _csAccountNumber = '';
+      var _csIssuedCardLabel = '';
+      var _csHolderInitials = '';
+      var _csHadExistingCards = false;
 
       function goToCardSetup() {
         resetCardSetup();
@@ -3282,6 +3337,10 @@
 
       function resetCardSetup() {
         _csCardId = null;
+        _csAccountNumber = '';
+        _csIssuedCardLabel = '';
+        _csHolderInitials = '';
+        _csHadExistingCards = false;
         // Reset steps
         document.getElementById('cs-step1').className = 'lstep active';
         document.getElementById('cs-step2').className = 'lstep';
@@ -3292,14 +3351,19 @@
         document.getElementById('cs-panel-done').style.display    = 'none';
         // Clear inputs and errors
         document.getElementById('cs-input-account').value = '';
+        document.getElementById('cs-input-account-confirm').value = '';
         document.getElementById('cs-input-pin').value     = '';
         document.getElementById('cs-input-pin2').value    = '';
         document.getElementById('cs-error-account').classList.remove('show');
         document.getElementById('cs-error-pin').classList.remove('show');
         document.getElementById('cs-pin-btn').disabled = false;
+        var issuedEl = document.getElementById('cs-issued-card');
+        if (issuedEl) issuedEl.style.display = 'none';
+        var issuedVal = document.getElementById('cs-issued-card-value');
+        if (issuedVal) issuedVal.textContent = '';
       }
 
-      // Step 1 — submit account number, request card creation
+      // Step 1 — submit account + card number, verify existing issued card
       function csNext() {
         var acct = document.getElementById('cs-input-account').value.trim().toUpperCase().replace(/\s/g,'');
         var err  = document.getElementById('cs-error-account');
@@ -3317,7 +3381,7 @@
           return;
         }
 
-        err.textContent = 'Creating your card…';
+        err.textContent = 'Verifying your card…';
         err.style.background = 'rgba(74,144,232,0.08)';
         err.style.borderColor = 'rgba(74,144,232,0.2)';
         err.style.color = '#4a90e8';
@@ -3336,12 +3400,25 @@
           err.style.color = '';
 
           if (!res.ok) {
-            err.textContent = res.d.error || res.d.detail || 'Card creation failed. Check your account number.';
+            err.textContent = res.d.error || res.d.detail || 'Card verification failed. Check your account number.';
             err.classList.add('show');
             return;
           }
 
           _csCardId = res.d.cardId;
+          _csAccountNumber = (res.d.accountNumber || acct || '').toUpperCase();
+          _csIssuedCardLabel = (res.d.maskedNumber || res.d.cardNumber || '').trim();
+          _csHolderInitials = (res.d.holderInitials || '').trim().toUpperCase();
+          _csHadExistingCards = !!res.d.hadExistingCards;
+          document.getElementById('cs-input-account-confirm').value = _csAccountNumber;
+          var issuedEl = document.getElementById('cs-issued-card');
+          var issuedVal = document.getElementById('cs-issued-card-value');
+          if (issuedEl && issuedVal && _csIssuedCardLabel) {
+            issuedVal.textContent = (_csHolderInitials ? (_csHolderInitials + ' • ') : '') + _csIssuedCardLabel;
+            issuedEl.style.display = '';
+          }
+          document.getElementById('cs-sub-pin').innerHTML =
+            'Card verified. For security, re-enter your account number, then choose a 4-digit PIN.';
 
           // Advance to PIN step
           document.getElementById('cs-step1').className = 'lstep done';
@@ -3361,11 +3438,27 @@
 
       // Step 2 — submit PIN
       function csSubmitPin() {
+        var accountConfirm = document.getElementById('cs-input-account-confirm').value.trim().toUpperCase().replace(/\s/g,'');
         var pin  = document.getElementById('cs-input-pin').value.trim();
         var pin2 = document.getElementById('cs-input-pin2').value.trim();
         var err  = document.getElementById('cs-error-pin');
         err.classList.remove('show');
 
+        if (!accountConfirm) {
+          err.textContent = 'Please confirm your account number.';
+          err.classList.add('show');
+          return;
+        }
+        if (!/^DE\d{20}$/.test(accountConfirm)) {
+          err.textContent = 'Account number format must be DE followed by 20 digits.';
+          err.classList.add('show');
+          return;
+        }
+        if (accountConfirm !== _csAccountNumber) {
+          err.textContent = 'Account number does not match the card setup account.';
+          err.classList.add('show');
+          return;
+        }
         if (!pin || !pin2) {
           err.textContent = 'Please enter and confirm your PIN.';
           err.classList.add('show');
@@ -3389,7 +3482,12 @@
         fetch('/card-setup/set-pin', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({cardId: _csCardId, pin: pin, pinConfirm: pin2})
+          body: JSON.stringify({
+            cardId: _csCardId,
+            accountNumber: accountConfirm,
+            pin: pin,
+            pinConfirm: pin2
+          })
         })
         .then(function(r) { return r.json().then(function(d){return {ok:r.ok,d:d};}); })
         .then(function(res) {
@@ -3406,8 +3504,9 @@
           document.getElementById('cs-panel-pin').style.display  = 'none';
           document.getElementById('cs-panel-done').style.display = '';
           var masked = res.d.maskedNumber || '**** **** **** ????';
+          var cardWithInitials = (_csHolderInitials ? (_csHolderInitials + ' • ') : '') + masked;
           document.getElementById('cs-done-card').textContent =
-            'Card ' + masked + ' is ready. You can now log in.';
+            'Card ' + cardWithInitials + ' is ready. You can now log in.';
         })
         .catch(function() {
           document.getElementById('cs-pin-btn').disabled = false;

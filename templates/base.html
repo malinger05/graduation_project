@@ -66,8 +66,11 @@ html,body{
   flex-shrink:0;
 }
 .brand{display:flex;align-items:center;gap:9px;}
-.brand-dot{width:9px;height:9px;border-radius:50%;background:var(--yellow);}
-.brand-name{font-size:14px;font-weight:700;color:var(--white);letter-spacing:-0.01em;}
+.brand-logo{
+  height:22px;
+  width:auto;
+  display:block;
+}
 .header-right{display:flex;align-items:center;gap:18px;}
 .hinfo{font-size:10px;color:rgba(255,255,255,0.4);font-family:var(--mono);}
 .hinfo span{color:rgba(255,255,255,0.75);}
@@ -136,8 +139,7 @@ html,body{
     <!-- Screen header -->
     <div class="screen-header">
       <div class="brand">
-        <span class="brand-dot"></span>
-        <span class="brand-name">Core Banking ATM</span>
+        <img class="brand-logo" src="{{ url_for('static', filename='bytebridge-logo.png') }}" alt="ByteBridge Bank">
       </div>
       <div class="header-right">
         {% if session.get('account') %}

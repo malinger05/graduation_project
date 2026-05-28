@@ -525,8 +525,13 @@ class CreateCardRequest(BaseModel):
  
 class SetOwnPinRequest(BaseModel):
     cardId: int
+    accountNumber: str
     pin: str
     pinConfirm: str
+
+
+class PrepareOwnPinRequest(BaseModel):
+    accountNumber: str
 
 
 def _require_service_token(x_service_token: str | None) -> None:
@@ -878,20 +883,10 @@ def atm_create_card(req: CreateCardRequest):
     Middleware returns the same payload to the ATM UI so it can proceed
     to the PIN-entry step.
     """
-    resp = cb_http.post(
-        f"{CORE_BANKING_URL}/atm/create-card-for-account",
-        json={"accountNumber": req.accountNumber},
-        headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
-        timeout=(3, 12),
+    raise HTTPException(
+        409,
+        "ATM setup does not create cards. Ask admin to issue a card first, then set PIN using account number."
     )
-    if not resp.ok:
-        try:
-            detail = resp.json().get("error", resp.text)
-        except Exception:
-            detail = resp.text
-        raise HTTPException(resp.status_code, detail)
- 
-    return resp.json()
  
  
 @app.post("/atm/set-own-pin")
@@ -914,10 +909,14 @@ def atm_set_own_pin(req: SetOwnPinRequest):
  
     if not req.pin.isdigit() or len(req.pin) != 4:
         raise HTTPException(400, "PIN must be exactly 4 digits.")
+
+    account_number = (req.accountNumber or "").strip().upper()
+    if not account_number:
+        raise HTTPException(400, "accountNumber is required.")
  
     resp = cb_http.post(
         f"{CORE_BANKING_URL}/atm/set-own-pin",
-        json={"cardId": str(req.cardId), "pin": req.pin},
+        json={"cardId": str(req.cardId), "accountNumber": account_number, "pin": req.pin},
         headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
         timeout=(3, 12),
     )
@@ -928,6 +927,33 @@ def atm_set_own_pin(req: SetOwnPinRequest):
             detail = resp.text
         raise HTTPException(resp.status_code, detail)
  
+    return resp.json()
+
+
+@app.post("/atm/prepare-own-pin")
+def atm_prepare_own_pin(req: PrepareOwnPinRequest):
+    """
+    Existing-card activation flow.
+    Validates card/account pair and returns cardId so ATM can set PIN on that exact card.
+    """
+    account_number = (req.accountNumber or "").strip().upper()
+
+    if not account_number:
+        raise HTTPException(400, "accountNumber is required.")
+
+    resp = cb_http.post(
+        f"{CORE_BANKING_URL}/atm/prepare-own-pin",
+        json={"accountNumber": account_number},
+        headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
+        timeout=(3, 12),
+    )
+    if not resp.ok:
+        try:
+            detail = resp.json().get("error", resp.text)
+        except Exception:
+            detail = resp.text
+        raise HTTPException(resp.status_code, detail)
+
     return resp.json()
  
  
@@ -952,9 +978,8 @@ def atm_card_setup_status(account_number: str):
     # If you want to look up by accountNumber without a session, add a
     # GET /atm/account-info?accountNumber=... endpoint to Core Banking
     # (ROLE_SERVICE gated) that returns basic account status + card count.
-    # For now, return a simple ok so the UI can proceed to create-card;
-    # Core Banking will enforce the limit on the actual create-card call.
-    return {"status": "ok", "message": "Proceed to card creation."}
+    # Deprecated status endpoint kept for compatibility only.
+    return {"status": "ok", "message": "Proceed to PIN setup."}
 
 
 @app.post("/atm/logout")

@@ -55,6 +55,42 @@ def normalize_serial(raw: str | None) -> str | None:
     return s or None
 
 
+def _serial_aliases(raw: str | None) -> set[str]:
+    """
+    Return equivalent serial representations for matching allow-lists.
+
+    Caddy may forward decimal serials, while OpenSSL commonly emits hex
+    (`serial=...`). We keep normalize_serial() stable and compare aliases.
+    """
+    norm = normalize_serial(raw)
+    if not norm:
+        return set()
+
+    aliases = {norm}
+    raw_s = (raw or "").strip()
+    had_hex_hint = (
+        raw_s.lower().startswith("serial=")
+        or ":" in raw_s
+        or any(ch in "ABCDEFabcdef" for ch in raw_s)
+    )
+
+    try:
+        if had_hex_hint:
+            as_int = int(norm, 16)
+            aliases.add(str(as_int))
+        elif norm.isdigit():
+            as_int = int(norm, 10)
+            aliases.add(format(as_int, "X"))
+        else:
+            as_int = int(norm, 16)
+            aliases.add(str(as_int))
+    except ValueError:
+        # Keep original normalized value only for non-hex/non-dec strings.
+        pass
+
+    return aliases
+
+
 def _parse_der_b64(der_b64: str) -> ClientCertInfo | None:
     """Parse subject and serial from a base64 DER client certificate (Caddy header)."""
     raw = der_b64.strip()
@@ -175,10 +211,13 @@ def load_allowed_serials() -> set[str]:
 
 def is_serial_allowed(serial: str | None) -> bool:
     """True if serial is empty (no mTLS metadata) or on the allow-list."""
-    norm = normalize_serial(serial)
-    if not norm:
+    presented = _serial_aliases(serial)
+    if not presented:
         return True
-    return norm in load_allowed_serials()
+    for allowed in load_allowed_serials():
+        if presented & _serial_aliases(allowed):
+            return True
+    return False
 
 
 def rejection_detail(info: ClientCertInfo | None, *, endpoint: str) -> str | None:

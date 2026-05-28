@@ -8,8 +8,8 @@
   <!-- ── Step 1: Enter account number ───────────────────────────────────── -->
   <div class="setup-hero red-hero">
     <div class="setup-hero-inner">
-      <h1 class="setup-headline">New card setup</h1>
-      <p class="setup-sub">Enter your IBAN account number to get started</p>
+      <h1 class="setup-headline">Card PIN setup</h1>
+      <p class="setup-sub">Enter your IBAN account number and issued card number</p>
     </div>
   </div>
 
@@ -18,7 +18,7 @@
 
       <div class="info-box">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
-        Your account number was given to you by the bank when you registered. It starts with <strong>DE</strong> followed by 20 digits.
+        Use the account number and card number sent by the bank. Account number starts with <strong>DE</strong> followed by 20 digits.
       </div>
 
       <form method="post" action="{{ url_for('card_setup') }}" id="account-form">
@@ -35,6 +35,21 @@
               autocomplete="off"
               autofocus
               required
+              style="font-family:var(--mono);font-size:16px;letter-spacing:0.05em;">
+          </div>
+        </div>
+        <div class="amount-field" style="margin-top: 14px;">
+          <label class="field-label">Card number (from email)</label>
+          <div class="field-input-wrap red-focus">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
+            <input
+              type="text"
+              name="card_number"
+              placeholder="6226 0000 0000 0000"
+              maxlength="19"
+              autocomplete="off"
+              required
+              oninput="this.value=this.value.replace(/[^0-9]/g,'').replace(/(\d{4})(?=\d)/g,'$1 ');"
               style="font-family:var(--mono);font-size:16px;letter-spacing:0.05em;">
           </div>
         </div>
@@ -68,14 +83,34 @@
 
       <div class="info-box green-info">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+        {% if had_existing_cards %}
+        You already have card(s) on this account. PIN setup is required for this new card. Confirm your account number, then choose a 4-digit PIN.
+        {% else %}
         Your card has been created. Choose a 4-digit PIN to activate it. Do not use obvious combinations like 1234 or your birth year.
+        {% endif %}
       </div>
 
       <form method="post" action="{{ url_for('card_setup') }}" id="pin-form">
         <input type="hidden" name="step" value="pin">
         <input type="hidden" name="card_id" value="{{ card_id }}">
+        <input type="hidden" name="had_existing_cards" value="{{ 1 if had_existing_cards else 0 }}">
 
         <div class="pin-grid">
+          <div class="field">
+            <label class="field-label">Confirm account number</label>
+            <div class="field-input-wrap green-focus">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
+              <input
+                type="text"
+                name="account_number"
+                id="account-number-confirm"
+                placeholder="DE00000000000000000000"
+                value="{{ account_number or '' }}"
+                maxlength="22"
+                autocomplete="off"
+                required>
+            </div>
+          </div>
           <div class="field">
             <label class="field-label">New PIN (4 digits)</label>
             <div class="field-input-wrap green-focus">

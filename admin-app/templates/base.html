@@ -36,14 +36,9 @@
     .sidebar-logo {
       padding: 24px 20px;
       border-bottom: 1px solid var(--border);
-      display: flex; align-items: center; gap: 10px;
+      display: flex; align-items: center;
     }
-    .sidebar-logo-icon {
-      width: 32px; height: 32px; border-radius: 8px;
-      background: var(--red); display: flex; align-items: center; justify-content: center;
-    }
-    .sidebar-logo-text { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; color: var(--text); }
-    .sidebar-logo-sub  { font-size: 10px; color: var(--muted); margin-top: 1px; }
+    .sidebar-logo-img { width: 165px; height: auto; display: block; }
 
     .sidebar-nav { flex: 1; padding: 16px 12px; display: flex; flex-direction: column; gap: 2px; }
 
@@ -244,13 +239,7 @@
 <!-- Sidebar -->
 <aside class="sidebar">
   <div class="sidebar-logo">
-    <div class="sidebar-logo-icon">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-    </div>
-    <div>
-      <div class="sidebar-logo-text">Core Banking</div>
-      <div class="sidebar-logo-sub">Admin Panel</div>
-    </div>
+    <img class="sidebar-logo-img" src="{{ url_for('static', filename='bytebridge-logo.png') }}" alt="ByteBridge Bank">
   </div>
 
   <nav class="sidebar-nav">

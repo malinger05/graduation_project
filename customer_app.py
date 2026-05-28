@@ -349,21 +349,28 @@ def card_setup():
     # ── Step 1: customer submits account number ────────────────────────────────
     if step == "account":
         account_number = (request.form.get("account_number") or "").strip().upper()
+        card_number = (request.form.get("card_number") or "").strip().replace(" ", "")
  
         if not account_number:
             flash("Please enter your account number.")
+            return render_template("card_setup.html", step="account")
+        if not card_number:
+            flash("Please enter your card number from the email.")
             return render_template("card_setup.html", step="account")
  
         # Basic IBAN format check (DE + 20 digits = 22 chars)
         if not account_number.startswith("DE") or len(account_number) != 22 or not account_number[2:].isdigit():
             flash("Invalid account number format. It should start with DE followed by 20 digits.")
             return render_template("card_setup.html", step="account")
+        if not card_number.isdigit() or len(card_number) != 16:
+            flash("Card number must be exactly 16 digits.")
+            return render_template("card_setup.html", step="account")
  
-        # Call middleware → Core Banking to create the card
+        # Validate existing card and prepare PIN setup (no card creation here).
         try:
             resp = mw_http.post(
-                f"{MIDDLEWARE_URL}/atm/create-card",
-                json={"accountNumber": account_number},
+                f"{MIDDLEWARE_URL}/atm/prepare-own-pin",
+                json={"accountNumber": account_number, "cardNumber": card_number},
                 timeout=(5, 15),
             )
         except Exception as e:
@@ -371,7 +378,7 @@ def card_setup():
             return render_template("card_setup.html", step="account")
  
         if resp.status_code == 404:
-            flash("Account number not found. Please check the number given to you by the bank.")
+            flash("Card or account not found. Please check the details sent by the bank.")
             return render_template("card_setup.html", step="account")
  
         if not resp.ok:
@@ -379,7 +386,7 @@ def card_setup():
                 detail = resp.json().get("error") or resp.json().get("detail") or resp.text
             except Exception:
                 detail = resp.text
-            flash(f"Card creation failed: {detail}")
+            flash(f"Card verification failed: {detail}")
             return render_template("card_setup.html", step="account")
  
         data = resp.json()
@@ -391,17 +398,32 @@ def card_setup():
             step="pin",
             card_id=card_id,
             masked_card=masked_card,
+            account_number=account_number,
+            had_existing_cards=False,
         )
  
     # ── Step 2: customer submits PIN ──────────────────────────────────────────
     if step == "pin":
         card_id     = request.form.get("card_id", "")
+        account_number = (request.form.get("account_number") or "").strip().upper()
         pin         = request.form.get("pin", "").strip()
         pin_confirm = request.form.get("pin_confirm", "").strip()
+        had_existing_cards = request.form.get("had_existing_cards") == "1"
  
         if not card_id:
             flash("Session lost. Please start again.")
             return render_template("card_setup.html", step="account")
+
+        if not account_number.startswith("DE") or len(account_number) != 22 or not account_number[2:].isdigit():
+            flash("Please enter the same valid account number to confirm PIN setup.")
+            return render_template(
+                "card_setup.html",
+                step="pin",
+                card_id=card_id,
+                masked_card=request.form.get("masked_card", ""),
+                account_number=account_number,
+                had_existing_cards=had_existing_cards,
+            )
  
         # Client-side JS already checks this, but validate server-side too
         if pin != pin_confirm:
@@ -411,6 +433,8 @@ def card_setup():
                 step="pin",
                 card_id=card_id,
                 masked_card=request.form.get("masked_card", ""),
+                account_number=account_number,
+                had_existing_cards=had_existing_cards,
             )
  
         if not pin.isdigit() or len(pin) != 4:
@@ -420,12 +444,19 @@ def card_setup():
                 step="pin",
                 card_id=card_id,
                 masked_card=request.form.get("masked_card", ""),
+                account_number=account_number,
+                had_existing_cards=had_existing_cards,
             )
  
         try:
             resp = mw_http.post(
                 f"{MIDDLEWARE_URL}/atm/set-own-pin",
-                json={"cardId": int(card_id), "pin": pin, "pinConfirm": pin_confirm},
+                json={
+                    "cardId": int(card_id),
+                    "accountNumber": account_number,
+                    "pin": pin,
+                    "pinConfirm": pin_confirm,
+                },
                 timeout=(5, 15),
             )
         except Exception:
@@ -435,6 +466,8 @@ def card_setup():
                 step="pin",
                 card_id=card_id,
                 masked_card=request.form.get("masked_card", ""),
+                account_number=account_number,
+                had_existing_cards=had_existing_cards,
             )
  
         if not resp.ok:
@@ -448,6 +481,8 @@ def card_setup():
                 step="pin",
                 card_id=card_id,
                 masked_card=request.form.get("masked_card", ""),
+                account_number=account_number,
+                had_existing_cards=had_existing_cards,
             )
  
         data = resp.json()
@@ -493,7 +528,7 @@ def card_setup_create():
 
     try:
         resp = mw_http.post(
-            f"{MIDDLEWARE_URL}/atm/create-card",
+            f"{MIDDLEWARE_URL}/atm/prepare-own-pin",
             json={"accountNumber": account_number},
             timeout=(5, 15),
         )
@@ -506,7 +541,7 @@ def card_setup_create():
         body = {}
 
     if not resp.ok:
-        error_msg = body.get("error") or body.get("detail") or "Card creation failed."
+        error_msg = body.get("error") or body.get("detail") or "Card verification failed."
         return jsonify({"error": error_msg}), resp.status_code
 
     return jsonify(body), 201
@@ -516,29 +551,38 @@ def card_setup_create():
 def card_setup_set_pin():
     """
     Step 2 of self-service card setup.
-    ATM SPA POSTs { cardId, pin, pinConfirm } here.
+    ATM SPA POSTs { cardId, accountNumber, pin, pinConfirm } here.
     We validate match and format, then forward to middleware → Core Banking.
     Returns JSON: { maskedNumber, message } or { error }
     """
     data       = request.get_json(silent=True) or {}
     card_id    = data.get("cardId")
+    account_number = (data.get("accountNumber") or "").strip().upper()
     pin        = str(data.get("pin") or "").strip()
     pin_confirm = str(data.get("pinConfirm") or "").strip()
 
-    if not card_id or not pin or not pin_confirm:
-        return jsonify({"error": "cardId, pin, and pinConfirm are required"}), 400
+    if not card_id or not account_number or not pin or not pin_confirm:
+        return jsonify({"error": "cardId, accountNumber, pin, and pinConfirm are required"}), 400
+
+    import re
+    if not re.match(r"^DE\d{20}$", account_number):
+        return jsonify({"error": "Invalid account number format. Must be DE followed by 20 digits."}), 400
 
     if pin != pin_confirm:
         return jsonify({"error": "PINs do not match."}), 400
 
-    import re
     if not re.match(r"^\d{4}$", pin):
         return jsonify({"error": "PIN must be exactly 4 digits."}), 400
 
     try:
         resp = mw_http.post(
             f"{MIDDLEWARE_URL}/atm/set-own-pin",
-            json={"cardId": int(card_id), "pin": pin, "pinConfirm": pin_confirm},
+            json={
+                "cardId": int(card_id),
+                "accountNumber": account_number,
+                "pin": pin,
+                "pinConfirm": pin_confirm,
+            },
             timeout=(5, 15),
         )
     except Exception:

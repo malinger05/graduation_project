@@ -96,6 +96,24 @@ page_title %}Customers{% endblock %} {% block body %}
               </svg>
               Register Account
             </a>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm open-details-btn"
+              style="margin-bottom: 4px"
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+              >
+                <path d="M5 12h14M12 5l7 7-7 7" />
+              </svg>
+              Manage cards
+            </button>
             <span
               style="
                 color: var(--muted);
@@ -106,7 +124,7 @@ page_title %}Customers{% endblock %} {% block body %}
                 white-space: nowrap;
               "
             >
-              Details
+              Open customer details
               <svg
                 width="11"
                 height="11"
@@ -1244,6 +1262,14 @@ page_title %}Customers{% endblock %} {% block body %}
 
     document.querySelectorAll(".customer-row").forEach((row) => {
       row.addEventListener("click", () => openCustomerModal(row.dataset));
+      const detailsBtn = row.querySelector(".open-details-btn");
+      if (detailsBtn) {
+        detailsBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openCustomerModal(row.dataset);
+        });
+      }
     });
 
     function openCustomerModal(d) {
@@ -1395,6 +1421,11 @@ page_title %}Customers{% endblock %} {% block body %}
               </div>
               <div class="card-pill-right">
                 <span style="font-size:10px;color:var(--muted);">${expiry}</span>
+                <button class="send-card-email-btn btn btn-sm btn-ghost"
+                  data-card-id="${c.cardId}" data-account-id="${accountId}"
+                  style="font-size:10px;padding:3px 8px;">
+                  Email
+                </button>
                 <button class="toggle-card-btn btn btn-sm"
                   data-card-id="${c.cardId}" data-account-id="${accountId}" data-current-status="${c.cardStatus}"
                   style="font-size:10px;padding:3px 9px;${isActive ? "background:rgba(232,25,60,0.08);border:1px solid rgba(232,25,60,0.2);color:#e8193c;" : "background:rgba(61,184,138,0.08);border:1px solid rgba(61,184,138,0.2);color:#3db88a;"}">
@@ -1432,6 +1463,37 @@ page_title %}Customers{% endblock %} {% block body %}
               }
             });
           });
+          listEl.querySelectorAll(".send-card-email-btn").forEach((btn) => {
+            btn.addEventListener("click", async function (e) {
+              e.stopPropagation();
+              const cid = this.dataset.cardId;
+              const aid = this.dataset.accountId;
+              const prev = this.textContent;
+              this.disabled = true;
+              this.textContent = "Sending…";
+              try {
+                const r = await fetch(
+                  "/admin/account/" + aid + "/cards/" + cid + "/send-email",
+                  { method: "POST" },
+                );
+                const data = await r.json().catch(() => ({}));
+                if (r.ok) {
+                  this.textContent = "Sent";
+                  setTimeout(() => {
+                    this.textContent = "Email";
+                    this.disabled = false;
+                  }, 1200);
+                } else {
+                  alert("Email send failed: " + (data.message || "Unknown error"));
+                  this.textContent = prev || "Email";
+                  this.disabled = false;
+                }
+              } catch (err) {
+                this.textContent = prev || "Email";
+                this.disabled = false;
+              }
+            });
+          });
         })
         .catch(() => {
           if (listEl)
@@ -1453,8 +1515,8 @@ page_title %}Customers{% endblock %} {% block body %}
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ holderName: "" }),
         });
-        const data = await r.json();
-        if (data.status === "ok") {
+        const data = await r.json().catch(() => ({}));
+        if (r.ok) {
           loadCards(accountId);
           btn.innerHTML =
             '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Issue card';
