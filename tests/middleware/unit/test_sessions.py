@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -148,3 +149,46 @@ class TestSessionDbPath:
             row = s.get(SessionState, token)
         assert row is not None
         assert row.card_number == "4000000000000002"
+
+    def test_get_touch_remove_and_cleanup_db(self, middleware_db, sessions_short_ttl):
+        import sessions as sess_mod
+
+        import db
+        from models import SessionState
+
+        token = sessions_short_ttl.create(**_session_create_kwargs(balance=77.0))
+        data = sessions_short_ttl.get(token)
+        assert data["balance"] == 77.0
+        assert sessions_short_ttl.touch(token) is True
+
+        sessions_short_ttl.update_balance(token, 88.0)
+        assert sessions_short_ttl.get(token)["balance"] == 88.0
+
+        sessions_short_ttl.remove(token)
+        with pytest.raises(HTTPException):
+            sessions_short_ttl.get(token)
+
+        token2 = sessions_short_ttl.create(**_session_create_kwargs(account_number="STALE"))
+        old = datetime.now(timezone.utc) - timedelta(seconds=120)
+        with db.db_session() as s:
+            row = s.get(SessionState, token2)
+            row.last_active = old
+        sessions_short_ttl.configure(30)
+        assert sess_mod.cleanup_expired() >= 1
+        sessions_short_ttl.configure(60)
+
+    def test_get_expired_session_deleted_from_db(self, middleware_db, sessions_short_ttl):
+        import db
+        from datetime import timedelta, timezone
+        from models import SessionState
+
+        token = sessions_short_ttl.create(**_session_create_kwargs())
+        sessions_short_ttl.configure(1)
+        past = datetime.now(timezone.utc) - timedelta(seconds=10)
+        with db.db_session() as s:
+            row = s.get(SessionState, token)
+            row.last_active = past
+        with pytest.raises(HTTPException) as exc:
+            sessions_short_ttl.get(token)
+        assert exc.value.status_code == 401
+        sessions_short_ttl.configure(60)

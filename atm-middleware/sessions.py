@@ -36,8 +36,14 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _is_expired(last_active: datetime) -> bool:
-    return last_active < _now() - timedelta(seconds=_ttl_seconds)
+    return _as_utc(last_active) < _now() - timedelta(seconds=_ttl_seconds)
 
 
 def _row_to_dict(row: SessionState) -> dict:

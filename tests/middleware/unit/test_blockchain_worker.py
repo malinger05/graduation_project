@@ -195,3 +195,45 @@ class TestTamperCheck:
         row = _sample_row(canonicalHash=None)
         admin.get_for_tamper_check.return_value = [row]
         assert blockchain_worker.run_tamper_check_once(admin) == 0
+
+    def test_tamper_patch_failure_logged(self):
+        admin = MagicMock()
+        row = _sample_row(canonicalHash="deadbeef" * 8)
+        admin.get_for_tamper_check.return_value = [row]
+        admin.patch_tampered.side_effect = RuntimeError("CB error")
+        assert blockchain_worker.run_tamper_check_once(admin) == 0
+
+    def test_confirm_requeue_patch_failure(self):
+        admin = MagicMock()
+        admin.get_submitted.return_value = [_sample_row(blockchainTx="0xfail")]
+        admin.patch_blockchain.side_effect = RuntimeError("patch failed")
+        assert blockchain_worker.run_confirm_poll_once(admin, lambda t: {"status": 0}) == 0
+
+    def test_submit_patch_after_failure(self):
+        admin = MagicMock()
+        admin.get_pending_submit.return_value = [_sample_row()]
+
+        def boom(_):
+            raise RuntimeError("RPC down")
+
+        admin.patch_blockchain.side_effect = [RuntimeError("patch failed"), None]
+        assert blockchain_worker.run_submit_retry_once(admin, boom) == 1
+
+
+class TestWorkerStart:
+    def test_start_spawns_threads(self, monkeypatch):
+        started = []
+
+        def fake_thread(target=None, args=(), daemon=False, name=None):
+            started.append(name)
+            return MagicMock()
+
+        monkeypatch.setattr(blockchain_worker.threading, "Thread", fake_thread)
+        blockchain_worker.start(
+            get_admin=lambda: MagicMock(),
+            submit_to_chain=lambda h: "0x",
+            get_receipt=lambda t: {"status": 1},
+        )
+        assert "bc-worker-retry" in started
+        assert "bc-worker-confirm" in started
+        assert "bc-worker-tamper" in started

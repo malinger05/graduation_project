@@ -52,6 +52,34 @@ banking domain logic live in the **`core-banking-system`** sibling repo.
   `lastSubmitError`) and a service-token-gated `/admin/transactions/*` API
   consumed by the in-middleware worker.
 
+## 0) Quick start (fresh clone)
+
+A `git clone` only brings the **source code**. The running stack also needs
+machine-local material that is intentionally **not** committed: TLS certs under
+`~/atm-tls`, a local `.env`, OS-keychain secrets, and `/etc/hosts` entries.
+Skipping these is the usual cause of "PostgreSQL won't start / won't connect"
+on a teammate's machine (the Docker DB containers refuse to boot without the
+Postgres TLS certs).
+
+Run this **once** after cloning (clone `core-banking-system` as a sibling
+folder first, and make sure Docker is running):
+
+```bash
+# Tools needed up front: docker, java, python3, mkcert (+ caddy for *.local)
+#   brew install mkcert nss caddy && mkcert -install
+
+cd graduation_project
+scripts/bootstrap.sh        # venv + deps, TLS certs, .env, keychain secrets, /etc/hosts
+scripts/run_demo.sh --check # verify everything resolves
+scripts/run_demo.sh         # start the full stack in order
+```
+
+`bootstrap.sh` is idempotent (safe to re-run). It auto-generates
+`FLASK_SECRET_KEY` and sets a local `MIDDLEWARE_DB_URL`, and prompts for the
+**shared** team secrets (`CONTRACT_ADDRESS`, `ETH_PRIVATE_KEY`,
+`MIDDLEWARE_SERVICE_TOKEN`) — get those from a teammate out-of-band. The
+sections below explain each step in detail and the manual alternative.
+
 ## 1) Prerequisites
 
 - Python 3.10+ (3.11+ recommended)

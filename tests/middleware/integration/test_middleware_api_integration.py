@@ -292,3 +292,139 @@ def test_logout_removes_session_and_returns_logged_out(client, middleware_db, mo
     assert resp.status_code == 200
     assert resp.json() == {"status": "logged_out"}
     assert removed["token"] == "session-logout"
+
+
+@pytest.mark.integration
+@pytest.mark.db
+def test_login_wrong_pin_records_lockout_in_db(client, middleware_db, monkeypatch):
+    """Three failed logins persist lockout state and return progressive lockout responses."""
+    import lockouts
+
+    account = "ACC-LOCK-INT"
+    card = "4111111111119999"
+    monkeypatch.setattr(middleware, "_resolve_card_to_account", lambda _c: account)
+    monkeypatch.setattr(
+        middleware,
+        "_cb_post",
+        lambda *_args, **_kwargs: _FakeResponse(401, {}),
+    )
+
+    first = client.post("/atm/login", json={"cardNumber": card, "pin": "0000"})
+    second = client.post("/atm/login", json={"cardNumber": card, "pin": "0000"})
+    third = client.post("/atm/login", json={"cardNumber": card, "pin": "0000"})
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "invalid"
+    assert first.json()["attempts_to_next_lock"] == 2
+
+    assert second.status_code == 200
+    assert second.json()["attempts_to_next_lock"] == 1
+
+    assert third.status_code == 200
+    assert third.json()["status"] == "locked"
+    assert third.json()["remaining_lock_seconds"] >= 0
+
+    locked = lockouts.check(account)
+    assert locked is not None
+    assert locked["status"] == "locked"
+
+    blocked = client.post("/atm/login", json={"cardNumber": card, "pin": "0000"})
+    assert blocked.status_code == 200
+    assert blocked.json()["status"] == "locked"
+
+
+@pytest.mark.integration
+@pytest.mark.db
+def test_reset_pin_after_admin_unlock_clears_lockout(client, middleware_db, monkeypatch):
+    """Admin unlock → PIN reset required → successful reset-pin clears middleware lockout row."""
+    import lockouts
+
+    account = "ACC-RESET-INT"
+    card = "4222222222228888"
+    monkeypatch.setattr(middleware, "SERVICE_TOKEN", "svc-integration")
+    monkeypatch.setattr(middleware, "_resolve_card_to_account", lambda _c: account)
+
+    monkeypatch.setattr(
+        middleware,
+        "_cb_post",
+        lambda *_args, **_kwargs: _FakeResponse(401, {}),
+    )
+    for _ in range(3):
+        client.post("/atm/login", json={"cardNumber": card, "pin": "0000"})
+
+    unlock = client.post(
+        "/atm/admin/login-unlock",
+        json={"accountNumber": account},
+        headers={"X-Service-Token": "svc-integration"},
+    )
+    assert unlock.status_code == 200
+    assert unlock.json()["mustResetPin"] is True
+
+    status = client.post("/atm/account-status", json={"accountNumber": account})
+    assert status.status_code == 200
+    assert status.json()["status"] == "pin_reset_required"
+    assert lockouts.requires_pin_reset(account)
+
+    monkeypatch.setattr(
+        middleware,
+        "_cb_post_service",
+        lambda *_args, **_kwargs: _FakeResponse(200, {"status": "ok"}),
+    )
+    reset = client.post(
+        "/atm/reset-pin",
+        json={"cardNumber": card, "newPin": "5678", "confirmPin": "5678"},
+    )
+    assert reset.status_code == 200
+    assert reset.json()["status"] == "ok"
+    assert not lockouts.requires_pin_reset(account)
+
+    after = client.post("/atm/account-status", json={"accountNumber": account})
+    assert after.json()["status"] == "ok"
+    assert after.json()["accountNumber"] == account
+
+
+@pytest.mark.integration
+@pytest.mark.db
+def test_atm_ack_confirms_dispense_with_session(client, middleware_db, monkeypatch):
+    """POST /atm/ack forwards dispense confirmation to Core Banking for the session holder."""
+    token = "ack-session-token"
+    tx_id = 901
+    monkeypatch.setattr(
+        middleware.sessions,
+        "get",
+        lambda _token: {
+            "jwt": "jwt-ack",
+            "account_id": 42,
+            "account_number": "ACC-ACK",
+            "card_number": "4333333333338888",
+            "balance": 300.0,
+            "customer_name": "AckUser",
+        },
+    )
+
+    captured = {}
+
+    def _cb_post_stub(path, body, token=None, extra_headers=None):
+        captured["path"] = path
+        captured["body"] = body
+        captured["token"] = token
+        return _FakeResponse(200, {"dispenseStatus": "DISPENSED"})
+
+    monkeypatch.setattr(middleware, "_cb_post", _cb_post_stub)
+
+    resp = client.post(
+        "/atm/ack",
+        json={"middlewareTxId": tx_id},
+        headers={"X-Session-Token": token},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {
+        "status": "CONFIRMED",
+        "middlewareTxId": tx_id,
+        "transactionId": tx_id,
+        "dispenseStatus": "DISPENSED",
+    }
+    assert captured["path"] == f"/accounts/42/transactions/{tx_id}/confirm-dispense"
+    assert captured["token"] == "jwt-ack"

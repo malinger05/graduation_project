@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import pytest
 
@@ -18,6 +19,49 @@ class TestNormalizeSerial:
 
     def test_colons_removed(self):
         assert client_cert.normalize_serial("1A:2B") == "1A2B"
+
+    def test_decimal_serial_converted_to_hex(self):
+        assert client_cert.normalize_serial("255") == "FF"
+
+    def test_empty_returns_none(self):
+        assert client_cert.normalize_serial(None) is None
+        assert client_cert.normalize_serial("  ") is None
+
+
+class TestSerialAliases:
+    def test_hex_and_decimal_aliases(self):
+        aliases = client_cert._serial_aliases("serial=FF")
+        assert "FF" in aliases
+        assert "255" in aliases
+
+    def test_decimal_input_adds_hex_alias(self):
+        aliases = client_cert._serial_aliases("255")
+        assert "FF" in aliases
+
+
+class TestContextAndFormat:
+    def test_set_and_current(self):
+        info = client_cert.ClientCertInfo(subject="CN=x", serial="AA")
+        client_cert.set_current(info)
+        assert client_cert.current() == info
+        client_cert.set_current(None)
+        assert client_cert.current() is None
+
+    def test_format_cert_audit_fields(self):
+        assert client_cert.format_cert_audit_fields(None) == {
+            "client_cert_subject": None,
+            "client_cert_serial": None,
+        }
+        info = client_cert.ClientCertInfo(subject="CN=kiosk", serial="serial=AB")
+        fields = client_cert.format_cert_audit_fields(info)
+        assert fields["client_cert_subject"] == "CN=kiosk"
+        assert fields["client_cert_serial"] == "AB"
+
+
+class TestParseDer:
+    def test_invalid_der_returns_none(self):
+        assert client_cert._parse_der_b64("not-valid-base64!!!") is None
+        assert client_cert._parse_der_b64("") is None
 
 
 class TestExtractFromHeaders:
@@ -110,3 +154,28 @@ class TestMonitorScan:
             )
         client_cert._scan_recent_logs()
         assert "UNKNOWN99" in client_cert._alerted_serials
+
+    def test_scan_skips_when_allowlist_empty(self, middleware_db, monkeypatch):
+        client_cert._alerted_serials.clear()
+        with patch.object(client_cert, "load_allowed_serials", return_value=set()):
+            client_cert._scan_recent_logs()
+
+
+class TestMonitorLoop:
+    def test_monitor_loop_disabled_exits_quickly(self, monkeypatch):
+        import threading
+
+        monkeypatch.setattr(config, "CLIENT_CERT_MONITOR_ENABLED", False, raising=False)
+        stop = threading.Event()
+        stop.set()
+        client_cert.monitor_loop(stop)
+
+    def test_load_allowed_from_pem_paths(self, monkeypatch, tmp_path):
+        pem = tmp_path / "atm-kiosk-client.pem"
+        pem.write_text("dummy")
+        monkeypatch.setattr(config, "CLIENT_CERT_ALLOWED_SERIALS", "", raising=False)
+        with patch.object(client_cert, "_default_client_pem_paths", return_value=[pem]):
+            with patch.object(client_cert, "_serial_from_pem", return_value="CAFE01"):
+                allowed = client_cert.load_allowed_serials()
+                assert allowed == {"CAFE01"}
+                assert client_cert.is_serial_allowed("CAFE01")
