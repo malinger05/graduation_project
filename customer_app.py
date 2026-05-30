@@ -6,6 +6,7 @@ No PostgreSQL. No blockchain. No Spring Boot calls.
 import os
 import io
 import base64
+import re
 import secrets
 import threading
 import time
@@ -24,6 +25,13 @@ from atm_architecture import (
     ATMApp,
     AccountsRepository,
     TransactionsRepository,
+)
+from card_setup_fingerprint import (
+    apply_result_to_setup,
+    cancel_fingerprint,
+    get_status as fingerprint_status,
+    is_job_running,
+    start_fingerprint,
 )
 
 app = Flask(__name__)
@@ -166,6 +174,47 @@ def _attach_qr(txn) -> dict | None:
         session["qr_popup"] = qr_payload
         session["last_qr"] = qr_payload
     return qr_payload
+
+
+def _parse_prepare_own_pin_body(body: dict, account_number: str) -> dict:
+    """Normalize prepare-own-pin response; infer flags when Core Banking omits new fields."""
+    had_existing = body.get("hadExistingCards")
+    slot_id = body.get("fingerprintSlotId")
+    if had_existing is None:
+        had_existing = slot_id is not None
+    return {
+        "accountNumber": (body.get("accountNumber") or account_number).strip().upper(),
+        "cardId": body.get("cardId"),
+        "maskedNumber": body.get("maskedNumber", "**** **** **** ????"),
+        "holderInitials": body.get("holderInitials", ""),
+        "hadExistingCards": bool(had_existing),
+        "fingerprintSlotId": slot_id,
+        "fingerprintOk": False,
+    }
+
+
+def _save_card_setup(setup: dict) -> None:
+    session["card_setup"] = setup
+    session.modified = True
+
+
+def _get_card_setup() -> dict | None:
+    return session.get("card_setup")
+
+
+def _require_card_setup() -> dict | tuple:
+    setup = _get_card_setup()
+    if not setup or not setup.get("cardId"):
+        return (jsonify({"error": "Card setup session expired. Start again."}), 400)
+    return setup
+
+
+def _sync_fingerprint_session() -> None:
+    setup = _get_card_setup()
+    if not setup:
+        return
+    updated = apply_result_to_setup(setup)
+    _save_card_setup(updated)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -336,51 +385,61 @@ def login():
 @app.route("/card-setup", methods=["GET", "POST"])
 def card_setup():
     """
-    Three-step wizard:
-      step=account  → customer enters IBAN account number
-      step=pin      → customer sets PIN twice
-      step=done     → success screen
+    Four-step wizard:
+      step=account      → customer enters IBAN + card number
+      step=fingerprint  → enroll (first card) or verify (additional card)
+      step=pin          → customer sets PIN twice
+      step=done         → success screen
     """
     if request.method == "GET":
+        if request.args.get("step") == "pin":
+            setup = _get_card_setup()
+            if setup and setup.get("fingerprintOk"):
+                return render_template(
+                    "card_setup.html",
+                    step="pin",
+                    card_id=setup["cardId"],
+                    masked_card=setup["maskedNumber"],
+                    account_number=setup["accountNumber"],
+                    had_existing_cards=setup["hadExistingCards"],
+                )
         return render_template("card_setup.html", step="account")
- 
+
     step = request.form.get("step", "account")
- 
-    # ── Step 1: customer submits account number ────────────────────────────────
+
+    # ── Step 1: account + card number ────────────────────────────────────────
     if step == "account":
         account_number = (request.form.get("account_number") or "").strip().upper()
         card_number = (request.form.get("card_number") or "").strip().replace(" ", "")
- 
+
         if not account_number:
             flash("Please enter your account number.")
             return render_template("card_setup.html", step="account")
         if not card_number:
             flash("Please enter your card number from the email.")
             return render_template("card_setup.html", step="account")
- 
-        # Basic IBAN format check (DE + 20 digits = 22 chars)
-        if not account_number.startswith("DE") or len(account_number) != 22 or not account_number[2:].isdigit():
+
+        if not re.match(r"^DE\d{20}$", account_number):
             flash("Invalid account number format. It should start with DE followed by 20 digits.")
             return render_template("card_setup.html", step="account")
-        if not card_number.isdigit() or len(card_number) != 16:
+        if not re.match(r"^\d{16}$", card_number):
             flash("Card number must be exactly 16 digits.")
             return render_template("card_setup.html", step="account")
- 
-        # Validate existing card and prepare PIN setup (no card creation here).
+
         try:
             resp = mw_http.post(
                 f"{MIDDLEWARE_URL}/atm/prepare-own-pin",
                 json={"accountNumber": account_number, "cardNumber": card_number},
                 timeout=(5, 15),
             )
-        except Exception as e:
+        except Exception:
             flash("Cannot reach the banking system. Please try again.")
             return render_template("card_setup.html", step="account")
- 
+
         if resp.status_code == 404:
             flash("Card or account not found. Please check the details sent by the bank.")
             return render_template("card_setup.html", step="account")
- 
+
         if not resp.ok:
             try:
                 detail = resp.json().get("error") or resp.json().get("detail") or resp.text
@@ -388,33 +447,44 @@ def card_setup():
                 detail = resp.text
             flash(f"Card verification failed: {detail}")
             return render_template("card_setup.html", step="account")
- 
-        data = resp.json()
-        card_id     = data.get("cardId")
-        masked_card = data.get("maskedNumber", "**** **** **** ????")
- 
+
+        setup = _parse_prepare_own_pin_body(resp.json(), account_number)
+        _save_card_setup(setup)
+
         return render_template(
             "card_setup.html",
-            step="pin",
-            card_id=card_id,
-            masked_card=masked_card,
-            account_number=account_number,
-            had_existing_cards=False,
+            step="fingerprint",
+            card_id=setup["cardId"],
+            masked_card=setup["maskedNumber"],
+            account_number=setup["accountNumber"],
+            had_existing_cards=setup["hadExistingCards"],
         )
- 
-    # ── Step 2: customer submits PIN ──────────────────────────────────────────
+
+    # ── Step 3: PIN (fingerprint must be done first) ───────────────────────────
     if step == "pin":
-        card_id     = request.form.get("card_id", "")
+        setup = _get_card_setup()
+        card_id = request.form.get("card_id", "")
         account_number = (request.form.get("account_number") or "").strip().upper()
-        pin         = request.form.get("pin", "").strip()
+        pin = request.form.get("pin", "").strip()
         pin_confirm = request.form.get("pin_confirm", "").strip()
         had_existing_cards = request.form.get("had_existing_cards") == "1"
- 
+
+        if not setup or not setup.get("fingerprintOk"):
+            flash("Complete fingerprint verification before setting your PIN.")
+            return render_template(
+                "card_setup.html",
+                step="fingerprint",
+                card_id=card_id or (setup or {}).get("cardId"),
+                masked_card=request.form.get("masked_card", ""),
+                account_number=account_number,
+                had_existing_cards=had_existing_cards,
+            )
+
         if not card_id:
             flash("Session lost. Please start again.")
             return render_template("card_setup.html", step="account")
 
-        if not account_number.startswith("DE") or len(account_number) != 22 or not account_number[2:].isdigit():
+        if not re.match(r"^DE\d{20}$", account_number):
             flash("Please enter the same valid account number to confirm PIN setup.")
             return render_template(
                 "card_setup.html",
@@ -424,8 +494,7 @@ def card_setup():
                 account_number=account_number,
                 had_existing_cards=had_existing_cards,
             )
- 
-        # Client-side JS already checks this, but validate server-side too
+
         if pin != pin_confirm:
             flash("PINs do not match. Please try again.")
             return render_template(
@@ -436,8 +505,8 @@ def card_setup():
                 account_number=account_number,
                 had_existing_cards=had_existing_cards,
             )
- 
-        if not pin.isdigit() or len(pin) != 4:
+
+        if not re.match(r"^\d{4}$", pin):
             flash("PIN must be exactly 4 digits.")
             return render_template(
                 "card_setup.html",
@@ -447,7 +516,7 @@ def card_setup():
                 account_number=account_number,
                 had_existing_cards=had_existing_cards,
             )
- 
+
         try:
             resp = mw_http.post(
                 f"{MIDDLEWARE_URL}/atm/set-own-pin",
@@ -469,7 +538,7 @@ def card_setup():
                 account_number=account_number,
                 had_existing_cards=had_existing_cards,
             )
- 
+
         if not resp.ok:
             try:
                 detail = resp.json().get("error") or resp.json().get("detail") or resp.text
@@ -484,45 +553,25 @@ def card_setup():
                 account_number=account_number,
                 had_existing_cards=had_existing_cards,
             )
- 
+
         data = resp.json()
-        masked_card = data.get("maskedNumber", "**** **** **** ????")
- 
+        masked_card = data.get("maskedNumber", setup.get("maskedNumber", "**** **** **** ????"))
+        session.pop("card_setup", None)
         return render_template("card_setup.html", step="done", masked_card=masked_card)
- 
-    # Fallback — unknown step
+
     return redirect(url_for("card_setup"))
-
-"""
-customer_app.py — ADD these two routes.
-
-These serve the fetch() calls from the SPA in atm.html.
-They do NOT render templates — they return JSON.
-
-Also make sure `from flask import jsonify` is imported (it already is in the original).
-"""
-
-from flask import jsonify, request
-import mw_http
-from atm_architecture import MIDDLEWARE_URL
-
-
 @app.route("/card-setup/create", methods=["POST"])
 def card_setup_create():
     """
-    Step 1 of self-service card setup.
-    ATM SPA POSTs { accountNumber } here.
-    We forward to middleware → Core Banking to create the card.
-    Returns JSON: { cardId, maskedNumber, accountNumber } or { error }
+    Step 1 of self-service card setup (ATM SPA).
+    Validates account and stores card-setup session for fingerprint + PIN steps.
     """
-    data           = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True) or {}
     account_number = (data.get("accountNumber") or "").strip().upper()
 
     if not account_number:
         return jsonify({"error": "accountNumber is required"}), 400
 
-    # Basic format guard (DE + 20 digits)
-    import re
     if not re.match(r"^DE\d{20}$", account_number):
         return jsonify({"error": "Invalid account number format. Must be DE followed by 20 digits."}), 400
 
@@ -544,7 +593,57 @@ def card_setup_create():
         error_msg = body.get("error") or body.get("detail") or "Card verification failed."
         return jsonify({"error": error_msg}), resp.status_code
 
-    return jsonify(body), 201
+    setup = _parse_prepare_own_pin_body(body, account_number)
+    _save_card_setup(setup)
+    response = {
+        **body,
+        "hadExistingCards": setup["hadExistingCards"],
+        "fingerprintSlotId": setup["fingerprintSlotId"],
+        "accountNumber": setup["accountNumber"],
+    }
+    return jsonify(response), 201
+
+
+@app.route("/card-setup/fingerprint/start", methods=["POST"])
+def card_setup_fingerprint_start():
+    setup = _require_card_setup()
+    if isinstance(setup, tuple):
+        return setup
+
+    if setup.get("fingerprintOk"):
+        return jsonify({"status": "ok", "mode": "done", "message": "Fingerprint already verified."})
+
+    if is_job_running():
+        return jsonify({"status": "ok", "mode": fingerprint_status().get("mode"), "message": "Already running."})
+
+    ok, mode = start_fingerprint(setup)
+    if not ok:
+        return jsonify({"error": mode}), 409
+    return jsonify({"status": "ok", "mode": mode}), 200
+
+
+@app.route("/card-setup/fingerprint/status", methods=["GET"])
+def card_setup_fingerprint_status():
+    setup = _require_card_setup()
+    if isinstance(setup, tuple):
+        return setup
+
+    _sync_fingerprint_session()
+    status = fingerprint_status()
+    setup = _get_card_setup() or {}
+    return jsonify(
+        {
+            **status,
+            "fingerprintOk": bool(setup.get("fingerprintOk")),
+            "fingerprintSlotId": setup.get("fingerprintSlotId"),
+        }
+    )
+
+
+@app.route("/card-setup/fingerprint/cancel", methods=["POST"])
+def card_setup_fingerprint_cancel():
+    cancel_fingerprint()
+    return jsonify({"status": "ok"})
 
 
 @app.route("/card-setup/set-pin", methods=["POST"])
@@ -564,7 +663,14 @@ def card_setup_set_pin():
     if not card_id or not account_number or not pin or not pin_confirm:
         return jsonify({"error": "cardId, accountNumber, pin, and pinConfirm are required"}), 400
 
-    import re
+    setup = _get_card_setup()
+    if not setup or not setup.get("fingerprintOk"):
+        return jsonify({"error": "Complete fingerprint verification before setting PIN."}), 403
+    if str(setup.get("cardId")) != str(card_id):
+        return jsonify({"error": "Card ID does not match setup session."}), 403
+    if setup.get("accountNumber") != account_number:
+        return jsonify({"error": "Account number does not match setup session."}), 403
+
     if not re.match(r"^DE\d{20}$", account_number):
         return jsonify({"error": "Invalid account number format. Must be DE followed by 20 digits."}), 400
 
@@ -597,6 +703,7 @@ def card_setup_set_pin():
         error_msg = body.get("error") or body.get("detail") or "PIN setup failed."
         return jsonify({"error": error_msg}), resp.status_code
 
+    session.pop("card_setup", None)
     return jsonify(body), 200
 
 

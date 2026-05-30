@@ -1931,10 +1931,14 @@
                   </div>
                   <div class="lstep" id="cs-step2">
                     <div class="lstep-dot">2</div>
-                    <div class="lstep-label">Set PIN</div>
+                    <div class="lstep-label">Fingerprint</div>
                   </div>
                   <div class="lstep" id="cs-step3">
                     <div class="lstep-dot">3</div>
+                    <div class="lstep-label">Set PIN</div>
+                  </div>
+                  <div class="lstep" id="cs-step4">
+                    <div class="lstep-dot">4</div>
                     <div class="lstep-label">Card active</div>
                   </div>
                 </div>
@@ -1979,7 +1983,38 @@
                   </button>
                 </div>
 
-                <!-- Step 2: PIN entry (hidden until step 1 done) -->
+                <!-- Step 2: fingerprint (hidden until account verified) -->
+                <div id="cs-panel-fingerprint" style="display: none">
+                  <div class="login-heading" id="cs-fp-heading">Fingerprint</div>
+                  <div class="login-sub-text" id="cs-sub-fingerprint">
+                    Follow the sensor instructions to continue.
+                  </div>
+                  <div class="error-box" id="cs-error-fingerprint"></div>
+                  <div
+                    id="cs-fp-status"
+                    class="login-sub-text"
+                    style="
+                      margin-top: 16px;
+                      padding: 16px;
+                      border-radius: 10px;
+                      background: rgba(74, 144, 232, 0.08);
+                      border: 1px solid rgba(74, 144, 232, 0.2);
+                      min-height: 48px;
+                    "
+                  >
+                    Waiting to start…
+                  </div>
+                  <button
+                    class="btn btn-yellow btn-full"
+                    id="cs-fp-retry-btn"
+                    onclick="startFingerprintFlow()"
+                    style="display: none; margin-top: 16px"
+                  >
+                    Try again
+                  </button>
+                </div>
+
+                <!-- Step 3: PIN entry (hidden until fingerprint done) -->
                 <div id="cs-panel-pin" style="display: none">
                   <div class="login-heading">Create your PIN</div>
                   <div class="login-sub-text" id="cs-sub-pin">
@@ -2050,7 +2085,7 @@
                   </button>
                 </div>
 
-                <!-- Step 3: success (hidden until PIN set) -->
+                <!-- Step 4: success (hidden until PIN set) -->
                 <div
                   id="cs-panel-done"
                   style="display: none; text-align: center"
@@ -3329,6 +3364,7 @@
       var _csIssuedCardLabel = '';
       var _csHolderInitials = '';
       var _csHadExistingCards = false;
+      var _csFpPollTimer = null;
 
       function goToCardSetup() {
         resetCardSetup();
@@ -3336,31 +3372,118 @@
       }
 
       function resetCardSetup() {
+        if (_csFpPollTimer) {
+          clearInterval(_csFpPollTimer);
+          _csFpPollTimer = null;
+        }
+        fetch('/card-setup/fingerprint/cancel', { method: 'POST' }).catch(function () {});
         _csCardId = null;
         _csAccountNumber = '';
         _csIssuedCardLabel = '';
         _csHolderInitials = '';
         _csHadExistingCards = false;
-        // Reset steps
         document.getElementById('cs-step1').className = 'lstep active';
         document.getElementById('cs-step2').className = 'lstep';
         document.getElementById('cs-step3').className = 'lstep';
-        // Show account panel, hide others
+        document.getElementById('cs-step4').className = 'lstep';
         document.getElementById('cs-panel-account').style.display = '';
-        document.getElementById('cs-panel-pin').style.display     = 'none';
-        document.getElementById('cs-panel-done').style.display    = 'none';
-        // Clear inputs and errors
+        document.getElementById('cs-panel-fingerprint').style.display = 'none';
+        document.getElementById('cs-panel-pin').style.display = 'none';
+        document.getElementById('cs-panel-done').style.display = 'none';
         document.getElementById('cs-input-account').value = '';
         document.getElementById('cs-input-account-confirm').value = '';
-        document.getElementById('cs-input-pin').value     = '';
-        document.getElementById('cs-input-pin2').value    = '';
+        document.getElementById('cs-input-pin').value = '';
+        document.getElementById('cs-input-pin2').value = '';
         document.getElementById('cs-error-account').classList.remove('show');
+        document.getElementById('cs-error-fingerprint').classList.remove('show');
         document.getElementById('cs-error-pin').classList.remove('show');
         document.getElementById('cs-pin-btn').disabled = false;
+        document.getElementById('cs-fp-retry-btn').style.display = 'none';
+        document.getElementById('cs-fp-status').textContent = 'Waiting to start…';
         var issuedEl = document.getElementById('cs-issued-card');
         if (issuedEl) issuedEl.style.display = 'none';
         var issuedVal = document.getElementById('cs-issued-card-value');
         if (issuedVal) issuedVal.textContent = '';
+      }
+
+      function csShowPinStep() {
+        document.getElementById('cs-step2').className = 'lstep done';
+        document.getElementById('cs-step3').className = 'lstep active';
+        document.getElementById('cs-panel-fingerprint').style.display = 'none';
+        document.getElementById('cs-panel-pin').style.display = '';
+        document.getElementById('cs-sub-pin').innerHTML =
+          'Fingerprint verified. Re-enter your account number, then choose a 4-digit PIN.';
+        document.getElementById('cs-input-pin').focus();
+      }
+
+      function pollFingerprintStatus() {
+        fetch('/card-setup/fingerprint/status')
+          .then(function (r) {
+            return r.json().then(function (d) {
+              return { ok: r.ok, d: d };
+            });
+          })
+          .then(function (res) {
+            if (!res.ok) return;
+            var st = res.d;
+            var msg = st.message || 'Processing…';
+            if (st.step && st.total) {
+              msg += ' (' + st.step + '/' + st.total + ')';
+            }
+            document.getElementById('cs-fp-status').textContent = msg;
+
+            if (st.done && st.ok) {
+              clearInterval(_csFpPollTimer);
+              _csFpPollTimer = null;
+              csShowPinStep();
+              return;
+            }
+            if (st.done && !st.ok) {
+              clearInterval(_csFpPollTimer);
+              _csFpPollTimer = null;
+              var err = document.getElementById('cs-error-fingerprint');
+              err.textContent = st.error || st.message || 'Fingerprint step failed.';
+              err.classList.add('show');
+              document.getElementById('cs-fp-retry-btn').style.display = '';
+            }
+          })
+          .catch(function () {});
+      }
+
+      function startFingerprintFlow() {
+        var err = document.getElementById('cs-error-fingerprint');
+        err.classList.remove('show');
+        document.getElementById('cs-fp-retry-btn').style.display = 'none';
+        document.getElementById('cs-fp-heading').textContent = _csHadExistingCards
+          ? 'Verify fingerprint'
+          : 'Register fingerprint';
+        document.getElementById('cs-sub-fingerprint').textContent = _csHadExistingCards
+          ? 'Place the same finger you registered with your first card.'
+          : 'Register your fingerprint (3 scans with the same finger).';
+        document.getElementById('cs-fp-status').textContent = 'Starting sensor…';
+
+        fetch('/card-setup/fingerprint/start', { method: 'POST' })
+          .then(function (r) {
+            return r.json().then(function (d) {
+              return { ok: r.ok, d: d };
+            });
+          })
+          .then(function (res) {
+            if (!res.ok) {
+              err.textContent = res.d.error || 'Could not start fingerprint step.';
+              err.classList.add('show');
+              document.getElementById('cs-fp-retry-btn').style.display = '';
+              return;
+            }
+            if (_csFpPollTimer) clearInterval(_csFpPollTimer);
+            _csFpPollTimer = setInterval(pollFingerprintStatus, 800);
+            pollFingerprintStatus();
+          })
+          .catch(function () {
+            err.textContent = 'Cannot reach server. Please try again.';
+            err.classList.add('show');
+            document.getElementById('cs-fp-retry-btn').style.display = '';
+          });
       }
 
       // Step 1 — submit account + card number, verify existing issued card
@@ -3418,14 +3541,13 @@
             issuedEl.style.display = '';
           }
           document.getElementById('cs-sub-pin').innerHTML =
-            'Card verified. For security, re-enter your account number, then choose a 4-digit PIN.';
+            'Card verified. Fingerprint check is next, then you will set your PIN.';
 
-          // Advance to PIN step
           document.getElementById('cs-step1').className = 'lstep done';
           document.getElementById('cs-step2').className = 'lstep active';
           document.getElementById('cs-panel-account').style.display = 'none';
-          document.getElementById('cs-panel-pin').style.display     = '';
-          document.getElementById('cs-input-pin').focus();
+          document.getElementById('cs-panel-fingerprint').style.display = '';
+          startFingerprintFlow();
         })
         .catch(function() {
           err.style.background = '';
@@ -3499,9 +3621,9 @@
           }
 
           // Success
-          document.getElementById('cs-step2').className = 'lstep done';
           document.getElementById('cs-step3').className = 'lstep done';
-          document.getElementById('cs-panel-pin').style.display  = 'none';
+          document.getElementById('cs-step4').className = 'lstep done';
+          document.getElementById('cs-panel-pin').style.display = 'none';
           document.getElementById('cs-panel-done').style.display = '';
           var masked = res.d.maskedNumber || '**** **** **** ????';
           var cardWithInitials = (_csHolderInitials ? (_csHolderInitials + ' • ') : '') + masked;

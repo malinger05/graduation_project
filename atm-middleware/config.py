@@ -62,7 +62,7 @@ def _lockout_minutes_list() -> list[float]:
     raw = _str("LOCKOUT_MINUTES", "")
     if raw:
         return [float(x.strip()) for x in raw.split(",") if x.strip()]
-    return [15.0, 30.0]
+    return [1.0, 1.0]
 
 
 LOCKOUT_MINUTES = _lockout_minutes_list()
