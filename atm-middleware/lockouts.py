@@ -20,7 +20,7 @@ import db
 from models import LoginLockout
 
 _max_attempts: int = 3
-_lockout_minutes: list[int] = [15, 30]
+_lockout_minutes: list[int] = [1, 1]
 
 _memory: dict[str, dict] = {}
 _memory_lock = threading.Lock()

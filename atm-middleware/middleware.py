@@ -553,6 +553,12 @@ class SetOwnPinRequest(BaseModel):
 
 class PrepareOwnPinRequest(BaseModel):
     accountNumber: str
+    cardNumber: str | None = None
+
+
+class RegisterFingerprintRequest(BaseModel):
+    accountNumber: str
+    fingerprintSlotId: int
 
 
 def _require_service_token(x_service_token: str | None) -> None:
@@ -1005,9 +1011,43 @@ def atm_prepare_own_pin(req: PrepareOwnPinRequest):
     if not account_number:
         raise HTTPException(400, "accountNumber is required.")
 
+    payload: dict = {"accountNumber": account_number}
+    if req.cardNumber:
+        payload["cardNumber"] = req.cardNumber.strip().replace(" ", "")
+
     resp = cb_http.post(
         f"{CORE_BANKING_URL}/atm/prepare-own-pin",
-        json={"accountNumber": account_number},
+        json=payload,
+        headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
+        timeout=(3, 12),
+    )
+    if not resp.ok:
+        try:
+            detail = resp.json().get("error", resp.text)
+        except Exception:
+            detail = resp.text
+        raise HTTPException(resp.status_code, detail)
+
+    return resp.json()
+
+
+@app.post("/atm/register-fingerprint")
+def atm_register_fingerprint(req: RegisterFingerprintRequest):
+    """
+    Persist fingerprint sensor slot id on the account after first-time enrollment.
+    """
+    account_number = (req.accountNumber or "").strip().upper()
+    if not account_number:
+        raise HTTPException(400, "accountNumber is required.")
+    if req.fingerprintSlotId < 0:
+        raise HTTPException(400, "fingerprintSlotId must be non-negative.")
+
+    resp = cb_http.post(
+        f"{CORE_BANKING_URL}/atm/register-fingerprint",
+        json={
+            "accountNumber": account_number,
+            "fingerprintSlotId": req.fingerprintSlotId,
+        },
         headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
         timeout=(3, 12),
     )
