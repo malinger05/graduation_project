@@ -237,3 +237,25 @@ class TestWorkerStart:
         assert "bc-worker-retry" in started
         assert "bc-worker-confirm" in started
         assert "bc-worker-tamper" in started
+
+class TestFailedSubmitAlert:
+    def test_empty_batch(self):
+        admin = MagicMock()
+        admin.get_failed_submit.return_value = []
+        assert blockchain_worker.run_failed_submit_alert_once(admin) == 0
+
+    def test_alerts_new_failed_row(self, middleware_db, monkeypatch):
+        admin = MagicMock()
+        row = _sample_row(chainStatus="FAILED_SUBMIT", lastSubmitError="RPC down")
+        admin.get_failed_submit.return_value = [row]
+        n = blockchain_worker.run_failed_submit_alert_once(admin)
+        assert n == 1
+
+    def test_skips_already_notified(self, middleware_db, monkeypatch):
+        import blockchain_dlq
+
+        admin = MagicMock()
+        row = _sample_row(chainStatus="FAILED_SUBMIT", lastSubmitError="same")
+        admin.get_failed_submit.return_value = [row]
+        blockchain_worker.run_failed_submit_alert_once(admin)
+        assert blockchain_worker.run_failed_submit_alert_once(admin) == 0

@@ -13,7 +13,7 @@ Still planned: routing_config.
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Float, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 
 from db import Base
@@ -192,3 +192,17 @@ class FraudEvent(Base):
 
     # Full list of signal dicts: [{code, severity, message, detail}, ...]
     signals        = Column(JSONB, nullable=False)
+class BlockchainDlq(Base):
+    """
+    Dead-letter queue for blockchain submissions that reached FAILED_SUBMIT
+    in Core Banking. One row per transaction_id; used for one-time alerts.
+    """
+
+    __tablename__ = "blockchain_dlq"
+
+    transaction_id = Column(BigInteger, primary_key=True)
+    account_number = Column(String, nullable=True)
+    last_error     = Column(String(1000), nullable=True)
+    failed_at      = Column(DateTime(timezone=True), nullable=False)
+    updated_at     = Column(DateTime(timezone=True), nullable=False)
+    notified_at    = Column(DateTime(timezone=True), nullable=True)

@@ -140,7 +140,16 @@ async def lifespan(app: FastAPI):
     print(f"[Middleware] Core Banking: {CORE_BANKING_URL}")
 
     try:
-        if db.init_db():
+        db_ready = db.init_db()
+        if not db_ready:
+            if config.MIDDLEWARE_REQUIRE_DB:
+                raise RuntimeError(
+                    "MIDDLEWARE_DB_URL is required but not set. "
+                    "Run: python3 scripts/manage_secrets.py set MIDDLEWARE_DB_URL "
+                    "(see .env.example). For local experiments only: MIDDLEWARE_REQUIRE_DB=0"
+                )
+            print("[Middleware] Operational DB: disabled (MIDDLEWARE_DB_URL unset)")
+        elif db_ready:
             print(f"[Middleware] Operational DB: {db.get_db_url()}")
             if config.TRANSACTION_LOG_RETENTION_DAYS > 0:
                 print(
@@ -157,8 +166,6 @@ async def lifespan(app: FastAPI):
                     f"[Middleware] Client cert monitor: {len(allowed)} allowed serial(s), "
                     f"{enforce}, scan every {config.CLIENT_CERT_MONITOR_INTERVAL_SECONDS}s"
                 )
-        else:
-            print("[Middleware] Operational DB: disabled (MIDDLEWARE_DB_URL unset)")
     except Exception as e:
         print(f"[Middleware] Operational DB: FAILED to initialize: {e}")
         raise

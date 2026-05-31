@@ -63,8 +63,16 @@ def _build_engine() -> Engine | None:
     url = get_db_url()
     if not url:
         return None
+    import config
+
     connect_args = _postgres_ssl_connect_args()
-    kwargs: dict[str, Any] = {"pool_pre_ping": True, "future": True}
+    kwargs: dict[str, Any] = {
+        "pool_pre_ping": True,
+        "future": True,
+        "pool_size": config.MW_DB_POOL_SIZE,
+        "max_overflow": config.MW_DB_POOL_MAX_OVERFLOW,
+        "pool_recycle": config.MW_DB_POOL_RECYCLE_SECONDS,
+    }
     if connect_args:
         kwargs["connect_args"] = connect_args
     return create_engine(url, **kwargs)
