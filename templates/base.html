@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{ csrf_token() }}">
 <title>{% block title %}ATM{% endblock %} — Core Banking</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
@@ -178,6 +179,7 @@ html,body{
         {% if session.get('account') %}
         <span class="sb-text">{{ session.get('full_name','') }} · ****{{ session.get('account','')[-4:] }}</span>
         <form method="post" action="{{ url_for('logout') }}" style="margin:0;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" style="background:none;border:none;font-size:9px;color:rgba(255,255,255,0.3);cursor:pointer;font-family:var(--mono);letter-spacing:0.04em;padding:0;">SIGN OUT</button>
         </form>
         {% else %}

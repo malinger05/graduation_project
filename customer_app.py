@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, session, url_for, jsonify
 import qrcode
 from secrets_manager import get_secret
+from csrf_support import register_csrf
 from security_headers import (
     configure_session_cookies,
     register_security_headers,
@@ -37,6 +38,7 @@ app.config["SESSION_COOKIE_NAME"] = "atm_session"
 app.config["SESSION_COOKIE_PATH"] = "/"
 configure_session_cookies(app)
 register_security_headers(app)
+register_csrf(app)
 
 
 @app.context_processor
@@ -500,19 +502,6 @@ def card_setup():
  
     # Fallback — unknown step
     return redirect(url_for("card_setup"))
-
-"""
-customer_app.py — ADD these two routes.
-
-These serve the fetch() calls from the SPA in atm.html.
-They do NOT render templates — they return JSON.
-
-Also make sure `from flask import jsonify` is imported (it already is in the original).
-"""
-
-from flask import jsonify, request
-import mw_http
-from atm_architecture import MIDDLEWARE_URL
 
 
 @app.route("/card-setup/create", methods=["POST"])

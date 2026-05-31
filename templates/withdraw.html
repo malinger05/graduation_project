@@ -14,6 +14,7 @@
 {% block topbar_right %}
   <span class="topbar-who">{{ full_name }}</span>
   <form method="post" action="{{ url_for('logout') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit" class="btn-ghost">Sign out</button>
   </form>
 {% endblock %}
@@ -32,6 +33,7 @@
     <div class="tx-body-inner">
 
       <form method="post" action="{{ url_for('withdraw') }}" id="withdraw-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
         <div class="amount-field">
           <div class="amount-input-wrap">

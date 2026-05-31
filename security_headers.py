@@ -24,7 +24,7 @@ _CSP = (
 def configure_session_cookies(app) -> None:
     """Harden Flask session cookies (HttpOnly is Flask default)."""
     app.config.setdefault("SESSION_COOKIE_HTTPONLY", True)
-    app.config.setdefault("SESSION_COOKIE_SAMESITE", "Lax")
+    app.config.setdefault("SESSION_COOKIE_SAMESITE", "Strict")
     secure = os.environ.get("FLASK_SESSION_SECURE", "").strip().lower() in (
         "1",
         "true",
@@ -61,5 +61,6 @@ def suppress_werkzeug_server_version() -> None:
         from werkzeug.serving import WSGIRequestHandler
 
         WSGIRequestHandler.server_version = ""
+        WSGIRequestHandler.sys_version = ""
     except Exception:
         pass

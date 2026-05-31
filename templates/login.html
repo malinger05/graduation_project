@@ -21,6 +21,7 @@
       <h2 class="form-title">Sign in</h2>
 
       <form method="post" action="{{ url_for('login') }}" class="login-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="field">
           <label class="field-label">Account number</label>
           <div class="field-input-wrap">

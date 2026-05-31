@@ -111,6 +111,6 @@ Scope: `http://127.0.0.1:5002` or `https://admin.local` — passive only unless 
 
 Save the HTML report under `security/zap/`. Fix High/Medium findings in Flask/middleware before any active scan on production-like data.
 
-Layer 1 Flask apps set security headers via `security_headers.py` (`CSP`, `X-Frame-Options`, `X-Content-Type-Options`, etc.). Re-run passive scan on `http://127.0.0.1:5001/atm` after pulling that change.
+Layer 1 Flask apps set security headers via `security_headers.py` (`CSP`, `X-Frame-Options`, `X-Content-Type-Options`, etc.) and CSRF via `csrf_support.py` (Flask-WTF). SPA `fetch` calls must send `X-CSRFToken` from the `<meta name="csrf-token">` tag. Re-run passive scan on `http://127.0.0.1:5001/atm` after pulling that change — use a **new ZAP session** so old alerts are not mixed in.
 
 When testing via Caddy (`https://atm.local`), set `FLASK_SESSION_SECURE=1` for the customer app (and admin if scanned) so session cookies are `Secure`. Re-install the Caddyfile from `scripts/caddy/Caddyfile.example` if you use TLS termination there (`-Server` on the proxy).

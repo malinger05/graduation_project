@@ -1060,7 +1060,7 @@ page_title %}Customers{% endblock %} {% block body %}
         try {
           const resp = await fetch(
             "/admin/account/" + _unlockAccountNumber + "/unlock",
-            { method: "POST" },
+            { method: "POST", credentials: "same-origin", headers: csrfHeaders() },
           );
           const data = await resp.json();
           if (data.status === "ok") {
@@ -1447,7 +1447,8 @@ page_title %}Customers{% endblock %} {% block body %}
               try {
                 const r = await fetch("/admin/card/" + cid + "/status", {
                   method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
+                  credentials: "same-origin",
+                  headers: csrfHeaders({ "Content-Type": "application/json" }),
                   body: JSON.stringify({
                     accountId: parseInt(aid),
                     cardStatus: next,
@@ -1474,7 +1475,7 @@ page_title %}Customers{% endblock %} {% block body %}
               try {
                 const r = await fetch(
                   "/admin/account/" + aid + "/cards/" + cid + "/send-email",
-                  { method: "POST" },
+                  { method: "POST", credentials: "same-origin", headers: csrfHeaders() },
                 );
                 const data = await r.json().catch(() => ({}));
                 if (r.ok) {
@@ -1512,7 +1513,8 @@ page_title %}Customers{% endblock %} {% block body %}
       try {
         const r = await fetch("/admin/account/" + accountId + "/cards/issue", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          headers: csrfHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify({ holderName: "" }),
         });
         const data = await r.json().catch(() => ({}));

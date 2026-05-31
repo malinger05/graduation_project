@@ -1,5 +1,6 @@
 # Layer 1 — Flask UI + ATM client
 Flask>=3.0.0
+Flask-WTF>=1.2.0
 python-dotenv>=1.0.0
 qrcode[pil]>=7.4.2
 keyring>=25.0.0

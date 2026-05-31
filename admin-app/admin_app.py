@@ -28,6 +28,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from secrets_manager import get_secret
+from csrf_support import register_csrf
 from security_headers import (
     configure_session_cookies,
     register_security_headers,
@@ -64,6 +65,7 @@ app.config["SESSION_COOKIE_NAME"] = "admin_session"
 app.config["SESSION_COOKIE_PATH"] = "/"
 configure_session_cookies(app)
 register_security_headers(app)
+register_csrf(app)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

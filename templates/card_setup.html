@@ -22,6 +22,7 @@
       </div>
 
       <form method="post" action="{{ url_for('card_setup') }}" id="account-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="step" value="account">
         <div class="amount-field">
           <label class="field-label">IBAN account number</label>
@@ -91,6 +92,7 @@
       </div>
 
       <form method="post" action="{{ url_for('card_setup') }}" id="pin-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="step" value="pin">
         <input type="hidden" name="card_id" value="{{ card_id }}">
         <input type="hidden" name="had_existing_cards" value="{{ 1 if had_existing_cards else 0 }}">

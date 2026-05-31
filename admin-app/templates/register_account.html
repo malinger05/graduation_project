@@ -11,6 +11,7 @@ block page_title %}Register Account{% endblock %} {% block body %}
 
 <div class="card" style="max-width: 400px; margin: 0 auto">
   <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="field">
       <label for="initialBalance">Initial Balance</label>
       <input

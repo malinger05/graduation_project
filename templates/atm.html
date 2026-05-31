@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="csrf-token" content="{{ csrf_token() }}" />
     <title>Core Banking ATM</title>
     <style>
       *,
@@ -2696,6 +2697,20 @@
     </div>
 
     <script>
+      function csrfHeaders(extra) {
+        var h = {
+          "X-CSRFToken": document
+            .querySelector('meta[name="csrf-token"]')
+            .getAttribute("content"),
+        };
+        if (extra) {
+          for (var k in extra) {
+            if (Object.prototype.hasOwnProperty.call(extra, k)) h[k] = extra[k];
+          }
+        }
+        return h;
+      }
+
       // ── State ──
       const S = {
         account: '',
@@ -2804,7 +2819,8 @@
           // POST to Flask
           fetch('/login',{
             method:'POST',
-            headers:{'Content-Type':'application/x-www-form-urlencoded'},
+            credentials:'same-origin',
+            headers:csrfHeaders({'Content-Type':'application/x-www-form-urlencoded'}),
             body:'account='+encodeURIComponent(S.loginAccount)+'&pin='+encodeURIComponent(val)
           })
           .then(r=>r.json().then(d=>({ok:r.ok,d})))
@@ -2869,7 +2885,7 @@
         document.getElementById('qr-mini-wrap').style.display='none';
         var qrBtn=document.getElementById('success-qr-btn');
         if(qrBtn)qrBtn.style.display='none';
-        fetch('/logout',{method:'POST'}).finally(()=>{
+        fetch('/logout',{method:'POST',credentials:'same-origin',headers:csrfHeaders()}).finally(()=>{
           S.account='';S.name='Customer';S.balance=0;S.flow='';
           document.getElementById('header-nav').classList.remove('visible');
           document.getElementById('status-account').textContent='';
@@ -2881,7 +2897,8 @@
       function checkAccountAfterEntry(account,errEl,onProceed){
         fetch('/check-account',{
           method:'POST',
-          headers:{'Content-Type':'application/x-www-form-urlencoded'},
+          credentials:'same-origin',
+          headers:csrfHeaders({'Content-Type':'application/x-www-form-urlencoded'}),
           body:'account='+encodeURIComponent(account)
         })
         .then(r=>r.json().then(d=>({ok:r.ok,d})))
@@ -2970,7 +2987,8 @@
           if(val!==S.pinResetNew){err.textContent='PINs do not match.';err.classList.add('show');return;}
           fetch('/reset-pin',{
             method:'POST',
-            headers:{'Content-Type':'application/x-www-form-urlencoded'},
+            credentials:'same-origin',
+            headers:csrfHeaders({'Content-Type':'application/x-www-form-urlencoded'}),
             body:'account='+encodeURIComponent(S.pinResetAccount)+
                  '&newPin='+encodeURIComponent(S.pinResetNew)+
                  '&confirmPin='+encodeURIComponent(val)
@@ -3213,7 +3231,8 @@
 
         fetch('/'+S.flow,{
           method:'POST',
-          headers:{'Content-Type':'application/x-www-form-urlencoded'},
+          credentials:'same-origin',
+          headers:csrfHeaders({'Content-Type':'application/x-www-form-urlencoded'}),
           body:'amount='+amt+'&idempotency_key='+idem
         })
         .then(r=>r.json().then(d=>({ok:r.ok,status:r.status,d})))
@@ -3234,7 +3253,8 @@
                 if(ackId){
                   fetch('/ack',{
                     method:'POST',
-                    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+                    credentials:'same-origin',
+                    headers:csrfHeaders({'Content-Type':'application/x-www-form-urlencoded'}),
                     body:'middlewareTxId='+encodeURIComponent(ackId)
                   }).catch(function(){});
                 }
@@ -3306,7 +3326,7 @@
       }
 
       document.getElementById('idle-prompt-yes').addEventListener('click',function(){
-        fetch('/session/continue',{method:'POST',credentials:'same-origin'})
+        fetch('/session/continue',{method:'POST',credentials:'same-origin',headers:csrfHeaders()})
           .then(function(r){if(!r.ok)throw new Error('continue failed');hideIdlePrompt();resetIdle();})
           .catch(function(){doLogout();});
       });
@@ -3389,7 +3409,8 @@
 
         fetch('/card-setup/create', {
           method: 'POST',
-          headers: {'Content-Type': 'application/json'},
+          credentials: 'same-origin',
+          headers: csrfHeaders({'Content-Type': 'application/json'}),
           body: JSON.stringify({accountNumber: acct})
         })
         .then(function(r) { return r.json().then(function(d){return {ok:r.ok,d:d};}); })
@@ -3481,7 +3502,8 @@
 
         fetch('/card-setup/set-pin', {
           method: 'POST',
-          headers: {'Content-Type': 'application/json'},
+          credentials: 'same-origin',
+          headers: csrfHeaders({'Content-Type': 'application/json'}),
           body: JSON.stringify({
             cardId: _csCardId,
             accountNumber: accountConfirm,
