@@ -1153,7 +1153,13 @@ def atm_deposit(
         account_number=account_number, endpoint="/atm/deposit",
         detail={"amount": req.amount},
     )
-    resp = _cb_post(f"/accounts/{account_id}/deposit", {"amountDeposit": req.amount}, jwt)
+    cb_idem_key = f"{account_number}:{idempotency_key}"
+    resp = _cb_post(
+        f"/accounts/{account_id}/deposit",
+        {"amountDeposit": req.amount},
+        jwt,
+        extra_headers={"X-Idempotency-Key": cb_idem_key},
+    )
     if not resp.ok:
         correlation.log_step(
             corr, "core_banking_response", "core_banking", "error",
@@ -1263,11 +1269,15 @@ def atm_withdraw(
         account_number=account_number, endpoint="/atm/withdraw",
         detail={"amount": req.amount},
     )
+    cb_idem_key = f"{account_number}:{idempotency_key}"
     resp = _cb_post(
         f"/accounts/{account_id}/withdraw",
         {"amountWithdraw": req.amount},
         jwt,
-        extra_headers={"X-Dispense-Ack-Timeout-Seconds": str(ACK_TIMEOUT_SECONDS)},
+        extra_headers={
+            "X-Dispense-Ack-Timeout-Seconds": str(ACK_TIMEOUT_SECONDS),
+            "X-Idempotency-Key": cb_idem_key,
+        },
     )
     if resp.status_code == 400:
         correlation.log_step(
