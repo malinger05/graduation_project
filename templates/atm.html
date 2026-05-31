@@ -2385,7 +2385,7 @@
             </div>
           </div>
 
-          <!-- PIN RESET REQUIRED (shown right after account number) -->
+          <!-- Credential reset notice (shown after account number) -->
           <div class="page" id="page-pin-reset-required">
             <div class="pin-reset-notice-inner">
               <div class="pin-reset-notice-icon">
@@ -2428,7 +2428,7 @@
             </div>
           </div>
 
-          <!-- PIN RESET (after admin unlock) -->
+          <!-- Credential reset flow (after staff unlock) -->
           <div class="page" id="page-pin-reset">
             <div class="login-split">
               <div class="login-left">
@@ -2470,7 +2470,7 @@
             </div>
           </div>
 
-          <!-- PIN RESET SUCCESS -->
+          <!-- Credential reset complete -->
           <div class="page" id="page-pin-reset-success">
             <div class="pin-reset-success-inner">
               <div class="prs-icon">
@@ -2926,7 +2926,7 @@
         showPinResetPage(S.pendingResetAccount||'');
       }
 
-      // ── PIN reset (only after admin unlock — triggered by account-status check) ──
+      // Credential reset after staff unlock (account-status check)
       function showPinResetPage(account){
         S.pinResetAccount=account||'';
         S.pinResetStep=2;

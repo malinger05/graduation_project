@@ -15,6 +15,11 @@ from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, session, url_for, jsonify
 import qrcode
 from secrets_manager import get_secret
+from security_headers import (
+    configure_session_cookies,
+    register_security_headers,
+    suppress_werkzeug_server_version,
+)
 
 load_dotenv()
 
@@ -30,6 +35,9 @@ app = Flask(__name__)
 app.secret_key = get_secret("FLASK_SECRET_KEY", "change-me-set-FLASK_SECRET_KEY-in-env")
 app.config["SESSION_COOKIE_NAME"] = "atm_session"
 app.config["SESSION_COOKIE_PATH"] = "/"
+configure_session_cookies(app)
+register_security_headers(app)
+
 
 @app.context_processor
 def inject_idle_session_config():
@@ -823,6 +831,7 @@ def tx_status(transaction_id):
 
 
 if __name__ == "__main__":
+    suppress_werkzeug_server_version()
     port = int(os.environ.get("PORT", "5001"))
     # Localhost only — use Caddy https://atm.local in the browser (see scripts/caddy/).
     host = os.environ.get("BIND_HOST", "127.0.0.1")

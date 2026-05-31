@@ -5,11 +5,23 @@
 
 atm.local {
 	tls __ATM_TLS_CERT__ __ATM_TLS_KEY__
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; form-action 'self'"
+		-Server
+	}
 	reverse_proxy 127.0.0.1:5001
 }
 
 admin.local {
 	tls __ATM_TLS_CERT__ __ATM_TLS_KEY__
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; form-action 'self'"
+		-Server
+	}
 	reverse_proxy 127.0.0.1:5002
 }
 

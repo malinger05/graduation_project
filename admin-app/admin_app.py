@@ -28,6 +28,11 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from secrets_manager import get_secret
+from security_headers import (
+    configure_session_cookies,
+    register_security_headers,
+    suppress_werkzeug_server_version,
+)
 
 import admin_mw_http
 
@@ -57,6 +62,8 @@ app = Flask(__name__)
 app.secret_key = get_secret("ADMIN_SECRET_KEY", "admin-change-me", allow_env_fallback=True)
 app.config["SESSION_COOKIE_NAME"] = "admin_session"
 app.config["SESSION_COOKIE_PATH"] = "/"
+configure_session_cookies(app)
+register_security_headers(app)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -610,6 +617,7 @@ def send_card_email(account_id, card_id):
 
 
 if __name__ == "__main__":
+    suppress_werkzeug_server_version()
     port = int(os.environ.get("PORT", "5002"))
     host = os.environ.get("BIND_HOST", "127.0.0.1")
     print(f"[admin_app] http://{host}:{port}  (browser: https://admin.local via Caddy)")
