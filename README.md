@@ -52,6 +52,10 @@ banking domain logic live in the **`core-banking-system`** sibling repo.
   `lastSubmitError`) and a service-token-gated `/admin/transactions/*` API
   consumed by the in-middleware worker.
 
+## Raspberry Pi deployment
+
+Step-by-step kiosk setup (Turkish): [`docs/RASPBERRY_PI_SETUP.md`](docs/RASPBERRY_PI_SETUP.md)
+
 ## 1) Prerequisites
 
 - Python 3.10+ (3.11+ recommended)
