@@ -172,6 +172,14 @@ fi
 
 # ── Phase 2: launch ───────────────────────────────────────────────────────────
 mkdir -p "$LOG_DIR"
+# Free demo ports left over from a previous run (ignore errors if nothing listening).
+pkill -9 -f 'atm-middleware/middleware' 2>/dev/null || true
+pkill -9 -f 'uvicorn middleware:app' 2>/dev/null || true
+pkill -9 -f 'python.*middleware\.py' 2>/dev/null || true
+for _port in 8000 8080 5001 5002; do
+  lsof -tiTCP:"$_port" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+done
+sleep 1
 PIDS=()
 CADDY_PID=""
 
@@ -180,6 +188,11 @@ cleanup() {
   hdr "Shutting down..."
   for pid in "${PIDS[@]:-}"; do
     [[ -n "$pid" ]] && kill "$pid" >/dev/null 2>&1 || true
+  done
+  # Grace period for uvicorn/Spring graceful shutdown before force-kill.
+  sleep 5
+  for pid in "${PIDS[@]:-}"; do
+    [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1 && kill -9 "$pid" >/dev/null 2>&1 || true
   done
   if [[ -n "$CADDY_PID" ]]; then sudo kill "$CADDY_PID" >/dev/null 2>&1 || true; fi
   # Leave the Docker databases running; they are cheap and reused across demos.
@@ -219,20 +232,21 @@ hdr "[2/6] Starting Core Banking (Spring Boot :8080)"
 export MIDDLEWARE_SERVICE_TOKEN="$(cd "$ROOT" && "$PY" -c 'from secrets_manager import get_secret; print(get_secret("MIDDLEWARE_SERVICE_TOKEN",""))')"
 ( cd "$CORE_BANKING_DIR" && ./mvnw -q spring-boot:run ) >"$LOG_DIR/core-banking.log" 2>&1 &
 PIDS+=("$!")
-if wait_tcp 127.0.0.1 8080 180; then
-  ok "Core Banking listening on :8080"
+if wait_http "http://127.0.0.1:8080/actuator/health" 180; then
+  ok "Core Banking healthy on :8080"
 else
-  bad "Core Banking did not start — see $LOG_DIR/core-banking.log"; exit 1
+  bad "Core Banking /actuator/health not responding — see $LOG_DIR/core-banking.log"; exit 1
 fi
 
 # 3) Middleware (FastAPI) ───────────────────────────────────────────────────────
 hdr "[3/6] Starting middleware (FastAPI :8000)"
-( cd "$ROOT/atm-middleware" && "$PY" middleware.py ) >"$LOG_DIR/middleware.log" 2>&1 &
+# 0.0.0.0 avoids macOS ghost binds on 127.0.0.1 after crashed uvicorn runs.
+( cd "$ROOT/atm-middleware" && "$PY" -m uvicorn middleware:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30 ) >"$LOG_DIR/middleware.log" 2>&1 &
 PIDS+=("$!")
-if wait_http "http://127.0.0.1:8000/health" 60; then
-  ok "Middleware healthy on :8000"
+if wait_http "http://127.0.0.1:8000/health/ready" 60; then
+  ok "Middleware ready on :8000"
 else
-  bad "Middleware /health not responding — see $LOG_DIR/middleware.log"; exit 1
+  bad "Middleware /health/ready not responding — see $LOG_DIR/middleware.log"; exit 1
 fi
 if grep -q "Operational DB: disabled" "$LOG_DIR/middleware.log" 2>/dev/null; then
   warn "Middleware started WITHOUT a database (in-memory sessions/lockouts). Check MIDDLEWARE_DB_URL."

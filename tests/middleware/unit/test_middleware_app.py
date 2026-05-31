@@ -422,7 +422,6 @@ def test_hash_and_persist_with_correlation_and_admin_patch_error(api_client, mon
             raise RuntimeError("patch failed")
 
     monkeypatch.setattr(middleware, "hash_transaction", lambda **kwargs: "HASH")
-    monkeypatch.setattr(middleware, "_submit_to_blockchain", lambda h: "0x1")
     monkeypatch.setattr(middleware, "_get_admin_client", lambda: _Admin())
 
     h, tx = middleware._hash_and_persist(
@@ -436,7 +435,7 @@ def test_hash_and_persist_with_correlation_and_admin_patch_error(api_client, mon
         correlation_id=corr,
     )
     assert h == "HASH"
-    assert tx == "0x1"
+    assert tx is None
 
 
 @pytest.mark.db

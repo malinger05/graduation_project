@@ -8,7 +8,8 @@ Responsibilities:
   - Forward login / deposit / withdraw to Core Banking
   - Track login lockouts (Postgres when configured, else in-memory)
   - Manage login sessions (Postgres when configured, else in-memory)
-  - Hash the confirmed transaction data and log it to Ethereum Sepolia
+  - Hash the confirmed transaction data (canonical hash PATCH to Core Banking;
+    Sepolia submit is deferred to background worker threads)
   - PATCH the canonical hash + blockchainTx back to Core Banking
   - Forward withdraw dispense ACK to Core Banking (state owned there)
   - Run blockchain reconciliation worker threads (submit-retry, confirm-poll,
@@ -123,17 +124,32 @@ def _get_admin_client() -> AdminClient | None:
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
 _cert_monitor_stop = threading.Event()
+_shutdown_event = threading.Event()
+_bg_threads: list[threading.Thread] = []
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    threading.Thread(target=_session_cleanup, daemon=True).start()
-    threading.Thread(target=_retention_cleanup, daemon=True).start()
-    threading.Thread(
+    global _bg_threads
+    _shutdown_event.clear()
+    _bg_threads = []
+
+    for target, name in (
+        (_session_cleanup, "session-cleanup"),
+        (_retention_cleanup, "retention-cleanup"),
+    ):
+        t = threading.Thread(target=target, daemon=False, name=name)
+        t.start()
+        _bg_threads.append(t)
+
+    cert_thread = threading.Thread(
         target=client_cert.monitor_loop,
         args=(_cert_monitor_stop,),
-        daemon=True,
-    ).start()
+        daemon=False,
+        name="client-cert-monitor",
+    )
+    cert_thread.start()
+    _bg_threads.append(cert_thread)
 
     print(f"[Middleware] Layer 2 started on port 8000")
     print(f"[Middleware] Core Banking: {CORE_BANKING_URL}")
@@ -189,7 +205,13 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    print("[Middleware] Shutting down — stopping background workers...")
+    _shutdown_event.set()
     _cert_monitor_stop.set()
+    blockchain_worker.stop(timeout=15)
+    for t in _bg_threads:
+        t.join(timeout=5)
+    print("[Middleware] Shutdown complete.")
 
 
 app = FastAPI(title="ATM Middleware — Layer 2", lifespan=lifespan)
@@ -386,8 +408,7 @@ def _verify_log_on_chain(canonical_hash: str) -> bool:
 
 def _session_cleanup() -> None:
     """Evict idle sessions and clear expired login lockouts. Runs every 60s."""
-    while True:
-        time.sleep(60)
+    while not _shutdown_event.wait(60):
         n = sessions.cleanup_expired()
         if n:
             print(f"[Sessions] Evicted {n} idle session(s)")
@@ -424,8 +445,7 @@ def _retention_cleanup() -> None:
             pass
         return None
 
-    while True:
-        time.sleep(interval)
+    while not _shutdown_event.wait(interval):
         if not db.is_enabled():
             continue
         try:
@@ -539,11 +559,79 @@ def _require_service_token(x_service_token: str | None) -> None:
         raise HTTPException(401, "Unauthorized")
 
 
+def _probe_middleware_db() -> dict:
+    if not db.is_enabled():
+        return {"status": "skipped", "detail": "MIDDLEWARE_DB_URL not configured"}
+    try:
+        from sqlalchemy import text
+
+        with db.db_session() as s:
+            s.execute(text("SELECT 1"))
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "down", "detail": str(e)[:200]}
+
+
+def _probe_core_banking() -> dict:
+    try:
+        resp = cb_http.get(
+            f"{CORE_BANKING_URL}/actuator/health",
+            timeout=(2, 5),
+        )
+        if resp.ok:
+            body = resp.json()
+            cb_status = body.get("status", "UNKNOWN")
+            if cb_status == "UP":
+                return {"status": "ok", "core_banking": cb_status}
+            return {"status": "down", "detail": f"actuator status={cb_status}"}
+        return {"status": "down", "detail": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"status": "down", "detail": str(e)[:200]}
+
+
+def _probe_blockchain_rpc() -> dict:
+    if not (CONTRACT_ADDRESS and ETH_PRIVATE_KEY and RPC_URL):
+        return {"status": "skipped", "detail": "blockchain not configured"}
+    try:
+        sess = requests.Session()
+        sess.trust_env = False
+        w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 5}, session=sess))
+        chain_id = w3.eth.chain_id
+        return {"status": "ok", "chain_id": chain_id}
+    except Exception as e:
+        return {"status": "down", "detail": str(e)[:200]}
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
+    """Liveness — process is up."""
     return {"status": "ok", "layer": 2, "service": "ATM Middleware"}
+
+
+@app.get("/health/ready")
+def health_ready():
+    """Readiness — dependencies required to serve traffic."""
+    checks = {
+        "middleware_db": _probe_middleware_db(),
+        "core_banking": _probe_core_banking(),
+        "blockchain_rpc": _probe_blockchain_rpc(),
+    }
+    required_down = [
+        name
+        for name, result in checks.items()
+        if result["status"] == "down"
+    ]
+    body = {
+        "status": "ready" if not required_down else "not_ready",
+        "layer": 2,
+        "service": "ATM Middleware",
+        "checks": checks,
+    }
+    if required_down:
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 @app.get("/health/cert-headers")
@@ -1032,10 +1120,9 @@ def _hash_and_persist(transaction_id: int,
                       *,
                       correlation_id: str | None = None) -> tuple[str, str | None]:
     """
-    Compute the canonical hash, submit to chain, and PATCH the row in Core
-    Banking so the worker has durable bookkeeping. On any failure the row
-    stays at chainStatus=PENDING_SUBMIT and the worker will retry it later.
-    Returns (canonical_hash, blockchain_tx_or_None).
+    Compute the canonical hash and PATCH the row in Core Banking so the
+    background worker can submit to Sepolia asynchronously. Returns
+    (canonical_hash, None) — chain submission is never done on the hot path.
     """
     if correlation_id:
         correlation.log_step(
@@ -1052,25 +1139,13 @@ def _hash_and_persist(transaction_id: int,
         reference_id=reference_id,
         created_at=created_at,
     )
-    try:
-        bc_tx = _submit_to_blockchain(c_hash)
-        if correlation_id:
-            correlation.log_step(
-                correlation_id, "blockchain_submit", "sepolia",
-                "ok" if bc_tx else "error",
-                account_number=account_number,
-                detail={"transaction_id": transaction_id, "canonical_hash": c_hash},
-                message=None if bc_tx else "submit returned no tx hash",
-            )
-    except Exception as e:
-        bc_tx = None
-        print(f"[Middleware] inline submit failed for tx {transaction_id}: {e}")
-        if correlation_id:
-            correlation.log_step(
-                correlation_id, "blockchain_submit", "sepolia", "error",
-                account_number=account_number, message=str(e),
-                detail={"transaction_id": transaction_id},
-            )
+    if correlation_id:
+        correlation.log_step(
+            correlation_id, "blockchain_submit", "sepolia", "deferred",
+            account_number=account_number,
+            detail={"transaction_id": transaction_id, "canonical_hash": c_hash},
+            message="worker will submit asynchronously",
+        )
 
     admin = _get_admin_client()
     if admin:
@@ -1078,8 +1153,8 @@ def _hash_and_persist(transaction_id: int,
             admin.patch_blockchain(
                 transaction_id=transaction_id,
                 canonical_hash=c_hash,
-                blockchain_tx=bc_tx,
-                submit_error=None if bc_tx else "inline submit failed",
+                blockchain_tx=None,
+                submit_error=None,
             )
             if correlation_id:
                 correlation.log_step(
@@ -1101,7 +1176,7 @@ def _hash_and_persist(transaction_id: int,
             account_number=account_number,
             message="admin client not configured",
         )
-    return c_hash, bc_tx
+    return c_hash, None
 
 
 @app.post("/atm/deposit")
@@ -1148,70 +1223,77 @@ def atm_deposit(
         account_number=account_number, endpoint="/atm/deposit",
     )
 
-    correlation.log_step(
-        corr, "core_banking_request", "core_banking", "ok",
-        account_number=account_number, endpoint="/atm/deposit",
-        detail={"amount": req.amount},
-    )
-    resp = _cb_post(f"/accounts/{account_id}/deposit", {"amountDeposit": req.amount}, jwt)
-    if not resp.ok:
+    try:
         correlation.log_step(
-            corr, "core_banking_response", "core_banking", "error",
+            corr, "core_banking_request", "core_banking", "ok",
             account_number=account_number, endpoint="/atm/deposit",
-            message=resp.text, detail={"status_code": resp.status_code},
+            detail={"amount": req.amount},
         )
-        raise HTTPException(resp.status_code, resp.text)
+        resp = _cb_post(f"/accounts/{account_id}/deposit", {"amountDeposit": req.amount}, jwt)
+        if not resp.ok:
+            correlation.log_step(
+                corr, "core_banking_response", "core_banking", "error",
+                account_number=account_number, endpoint="/atm/deposit",
+                message=resp.text, detail={"status_code": resp.status_code},
+            )
+            raise HTTPException(resp.status_code, resp.text)
 
-    result      = resp.json()
-    tx_id       = int(result["transactionId"])
-    new_balance = float(result.get("balanceAfter", 0))
-    ref_id      = str(result.get("referenceId", ""))
-    created_at  = str(result.get("createdAt", datetime.now(timezone.utc).isoformat()))
-    sessions.update_balance(x_session_token, new_balance)
-    correlation.log_step(
-        corr, "core_banking_response", "core_banking", "ok",
-        account_number=account_number, endpoint="/atm/deposit",
-        detail={"transaction_id": tx_id, "balance_after": new_balance},
-    )
+        result      = resp.json()
+        tx_id       = int(result["transactionId"])
+        new_balance = float(result.get("balanceAfter", 0))
+        ref_id      = str(result.get("referenceId", ""))
+        created_at  = str(result.get("createdAt", datetime.now(timezone.utc).isoformat()))
+        sessions.update_balance(x_session_token, new_balance)
+        correlation.log_step(
+            corr, "core_banking_response", "core_banking", "ok",
+            account_number=account_number, endpoint="/atm/deposit",
+            detail={"transaction_id": tx_id, "balance_after": new_balance},
+        )
 
-    c_hash, bc_tx = _hash_and_persist(
-        transaction_id=tx_id,
-        account_number=account_number,
-        transaction_type="DEPOSIT",
-        amount=req.amount,
-        balance_after=new_balance,
-        reference_id=ref_id,
-        created_at=created_at,
-        correlation_id=corr,
-    )
+        c_hash, bc_tx = _hash_and_persist(
+            transaction_id=tx_id,
+            account_number=account_number,
+            transaction_type="DEPOSIT",
+            amount=req.amount,
+            balance_after=new_balance,
+            reference_id=ref_id,
+            created_at=created_at,
+            correlation_id=corr,
+        )
 
-    response = {
-        "status":        "SUCCESS",
-        "amount":        req.amount,
-        "oldBalance":    old_balance,
-        "newBalance":    new_balance,
-        "canonicalHash": c_hash,
-        "blockchainTx":  bc_tx,
-        "verifyUrl":     f"https://sepolia.etherscan.io/tx/{bc_tx}" if bc_tx else None,
-        "referenceId":   ref_id,
-        "transactionId": tx_id,
-        "message":       "" if bc_tx else "Blockchain sync unavailable — worker will retry.",
-    }
+        response = {
+            "status":        "SUCCESS",
+            "amount":        req.amount,
+            "oldBalance":    old_balance,
+            "newBalance":    new_balance,
+            "canonicalHash": c_hash,
+            "blockchainTx":  bc_tx,
+            "verifyUrl":     f"https://sepolia.etherscan.io/tx/{bc_tx}" if bc_tx else None,
+            "referenceId":   ref_id,
+            "transactionId": tx_id,
+            "message":       "Blockchain submission queued — worker will submit shortly.",
+        }
 
-    idempotency.finish(idempotency_key, account_number, response)
-    correlation.log_step(
-        corr, "idempotency_finish", "middleware", "ok",
-        account_number=account_number, endpoint="/atm/deposit",
-    )
+        idempotency.finish(idempotency_key, account_number, response)
+        correlation.log_step(
+            corr, "idempotency_finish", "middleware", "ok",
+            account_number=account_number, endpoint="/atm/deposit",
+        )
 
-    _audit(
-        endpoint="/atm/deposit", http_method="POST", outcome="success",
-        status_code=200, started=started, account_number=account_number,
-        channel=channel, idempotency_key=idempotency_key,
-        request_body=req.model_dump(), response_body=response,
-        correlation_id=corr,
-    )
-    return response
+        _audit(
+            endpoint="/atm/deposit", http_method="POST", outcome="success",
+            status_code=200, started=started, account_number=account_number,
+            channel=channel, idempotency_key=idempotency_key,
+            request_body=req.model_dump(), response_body=response,
+            correlation_id=corr,
+        )
+        return response
+    except HTTPException:
+        idempotency.abort(idempotency_key, account_number)
+        raise
+    except Exception:
+        idempotency.abort(idempotency_key, account_number)
+        raise
 
 
 @app.post("/atm/withdraw")
@@ -1258,83 +1340,90 @@ def atm_withdraw(
         account_number=account_number, endpoint="/atm/withdraw",
     )
 
-    correlation.log_step(
-        corr, "core_banking_request", "core_banking", "ok",
-        account_number=account_number, endpoint="/atm/withdraw",
-        detail={"amount": req.amount},
-    )
-    resp = _cb_post(
-        f"/accounts/{account_id}/withdraw",
-        {"amountWithdraw": req.amount},
-        jwt,
-        extra_headers={"X-Dispense-Ack-Timeout-Seconds": str(ACK_TIMEOUT_SECONDS)},
-    )
-    if resp.status_code == 400:
+    try:
         correlation.log_step(
-            corr, "core_banking_response", "core_banking", "error",
+            corr, "core_banking_request", "core_banking", "ok",
             account_number=account_number, endpoint="/atm/withdraw",
-            message="insufficient funds",
+            detail={"amount": req.amount},
         )
-        raise HTTPException(400, "Insufficient funds")
-    if not resp.ok:
+        resp = _cb_post(
+            f"/accounts/{account_id}/withdraw",
+            {"amountWithdraw": req.amount},
+            jwt,
+            extra_headers={"X-Dispense-Ack-Timeout-Seconds": str(ACK_TIMEOUT_SECONDS)},
+        )
+        if resp.status_code == 400:
+            correlation.log_step(
+                corr, "core_banking_response", "core_banking", "error",
+                account_number=account_number, endpoint="/atm/withdraw",
+                message="insufficient funds",
+            )
+            raise HTTPException(400, "Insufficient funds")
+        if not resp.ok:
+            correlation.log_step(
+                corr, "core_banking_response", "core_banking", "error",
+                account_number=account_number, endpoint="/atm/withdraw",
+                message=resp.text, detail={"status_code": resp.status_code},
+            )
+            raise HTTPException(resp.status_code, resp.text)
+
+        result      = resp.json()
+        tx_id       = int(result["transactionId"])
+        new_balance = float(result.get("balanceAfter", 0))
+        ref_id      = str(result.get("referenceId", ""))
+        created_at  = str(result.get("createdAt", datetime.now(timezone.utc).isoformat()))
+        sessions.update_balance(x_session_token, new_balance)
         correlation.log_step(
-            corr, "core_banking_response", "core_banking", "error",
+            corr, "core_banking_response", "core_banking", "ok",
             account_number=account_number, endpoint="/atm/withdraw",
-            message=resp.text, detail={"status_code": resp.status_code},
+            detail={"transaction_id": tx_id, "balance_after": new_balance},
         )
-        raise HTTPException(resp.status_code, resp.text)
 
-    result      = resp.json()
-    tx_id       = int(result["transactionId"])
-    new_balance = float(result.get("balanceAfter", 0))
-    ref_id      = str(result.get("referenceId", ""))
-    created_at  = str(result.get("createdAt", datetime.now(timezone.utc).isoformat()))
-    sessions.update_balance(x_session_token, new_balance)
-    correlation.log_step(
-        corr, "core_banking_response", "core_banking", "ok",
-        account_number=account_number, endpoint="/atm/withdraw",
-        detail={"transaction_id": tx_id, "balance_after": new_balance},
-    )
+        c_hash, bc_tx = _hash_and_persist(
+            transaction_id=tx_id,
+            account_number=account_number,
+            transaction_type="WITHDRAW",
+            amount=req.amount,
+            balance_after=new_balance,
+            reference_id=ref_id,
+            created_at=created_at,
+            correlation_id=corr,
+        )
 
-    c_hash, bc_tx = _hash_and_persist(
-        transaction_id=tx_id,
-        account_number=account_number,
-        transaction_type="WITHDRAW",
-        amount=req.amount,
-        balance_after=new_balance,
-        reference_id=ref_id,
-        created_at=created_at,
-        correlation_id=corr,
-    )
+        response = {
+            "middlewareTxId": tx_id,
+            "transactionId":  tx_id,
+            "status":         "SUCCESS",
+            "amount":         req.amount,
+            "oldBalance":     old_balance,
+            "newBalance":     new_balance,
+            "canonicalHash":  c_hash,
+            "blockchainTx":   bc_tx,
+            "verifyUrl":      f"https://sepolia.etherscan.io/tx/{bc_tx}" if bc_tx else None,
+            "referenceId":    ref_id,
+            "message":        "Dispense cash now, then call /atm/ack",
+        }
 
-    response = {
-        "middlewareTxId": tx_id,
-        "transactionId":  tx_id,
-        "status":         "SUCCESS",
-        "amount":         req.amount,
-        "oldBalance":     old_balance,
-        "newBalance":     new_balance,
-        "canonicalHash":  c_hash,
-        "blockchainTx":   bc_tx,
-        "verifyUrl":      f"https://sepolia.etherscan.io/tx/{bc_tx}" if bc_tx else None,
-        "referenceId":    ref_id,
-        "message":        "Dispense cash now, then call /atm/ack",
-    }
+        idempotency.finish(idempotency_key, account_number, response)
+        correlation.log_step(
+            corr, "idempotency_finish", "middleware", "ok",
+            account_number=account_number, endpoint="/atm/withdraw",
+        )
 
-    idempotency.finish(idempotency_key, account_number, response)
-    correlation.log_step(
-        corr, "idempotency_finish", "middleware", "ok",
-        account_number=account_number, endpoint="/atm/withdraw",
-    )
-
-    _audit(
-        endpoint="/atm/withdraw", http_method="POST", outcome="success",
-        status_code=200, started=started, account_number=account_number,
-        channel=channel, idempotency_key=idempotency_key,
-        request_body=req.model_dump(), response_body=response,
-        correlation_id=corr,
-    )
-    return response
+        _audit(
+            endpoint="/atm/withdraw", http_method="POST", outcome="success",
+            status_code=200, started=started, account_number=account_number,
+            channel=channel, idempotency_key=idempotency_key,
+            request_body=req.model_dump(), response_body=response,
+            correlation_id=corr,
+        )
+        return response
+    except HTTPException:
+        idempotency.abort(idempotency_key, account_number)
+        raise
+    except Exception:
+        idempotency.abort(idempotency_key, account_number)
+        raise
 
 
 @app.post("/atm/ack")
@@ -1475,4 +1564,5 @@ def atm_tx_status(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("middleware:app", host="127.0.0.1", port=8000, reload=False)
+    # 0.0.0.0: Caddy still reaches 127.0.0.1:8000; avoids macOS ghost binds on loopback.
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)

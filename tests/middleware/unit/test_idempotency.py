@@ -133,6 +133,18 @@ class TestIdempotencyFingerprint:
     def test_finish_without_begin_is_safe(self, middleware_db):
         idempotency.finish("ghost", "ACC1", {"x": 1})
 
+    def test_abort_removes_in_progress(self, middleware_db):
+        idempotency.begin("abort-me", "ACC1", "/atm/deposit", {"amount": 1})
+        idempotency.abort("abort-me", "ACC1")
+        assert idempotency.begin("abort-me", "ACC1", "/atm/deposit", {"amount": 1}) is None
+
+    def test_abort_noop_when_completed(self, middleware_db):
+        idempotency.begin("done", "ACC1", "/atm/deposit", {"amount": 1})
+        idempotency.finish("done", "ACC1", {"ok": True})
+        idempotency.abort("done", "ACC1")
+        cached = idempotency.begin("done", "ACC1", "/atm/deposit", {"amount": 1})
+        assert cached == {"ok": True}
+
     def test_accounts_isolated_same_key(self, middleware_db):
         idempotency.begin("shared", "ACC-A", "/atm/deposit", {"amount": 1})
         idempotency.finish("shared", "ACC-A", {"from": "A"})

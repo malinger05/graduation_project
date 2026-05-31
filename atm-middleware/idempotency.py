@@ -13,6 +13,8 @@ Usage in an endpoint:
     idempotency.finish(key, account_number, response)
     return response
 
+On failure after begin(), call idempotency.abort() so retries are not blocked.
+
 If MIDDLEWARE_DB_URL is unset, both functions become no-ops and the endpoint
 behaves exactly as it did before the middleware DB was added. This lets us
 roll out persistence table-by-table without breaking existing clients.
@@ -132,6 +134,22 @@ def begin(
             expires_at          = now + IDEMPOTENCY_TTL,
         ))
     return None
+
+
+def abort(idempotency_key: str | None, account_number: str) -> None:
+    """
+    Drop an in-progress claim when the request failed before finish().
+
+    Safe to call when the DB is disabled (no-op) or the row is already completed.
+    """
+    key = (idempotency_key or "").strip()
+    if not key or not db.is_enabled():
+        return
+
+    with db.db_session() as s:
+        rec = s.get(IdempotencyRecord, (account_number, key))
+        if rec is not None and rec.status == "in_progress":
+            s.delete(rec)
 
 
 def finish(

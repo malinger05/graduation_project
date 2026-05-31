@@ -224,7 +224,7 @@ class TestWorkerStart:
     def test_start_spawns_threads(self, monkeypatch):
         started = []
 
-        def fake_thread(target=None, args=(), daemon=False, name=None):
+        def fake_thread(target=None, args=(), daemon=False, name=None, **kwargs):
             started.append(name)
             return MagicMock()
 
@@ -237,3 +237,27 @@ class TestWorkerStart:
         assert "bc-worker-retry" in started
         assert "bc-worker-confirm" in started
         assert "bc-worker-tamper" in started
+
+    def test_stop_joins_threads(self, monkeypatch):
+        joined = []
+
+        class _FakeThread:
+            def __init__(self, target=None, args=(), daemon=False, name=None, **kwargs):
+                self.name = name
+                self._target = target
+                self._args = args
+
+            def start(self):
+                pass
+
+            def join(self, timeout=None):
+                joined.append(self.name)
+
+        monkeypatch.setattr(blockchain_worker.threading, "Thread", _FakeThread)
+        blockchain_worker.start(
+            get_admin=lambda: MagicMock(),
+            submit_to_chain=lambda h: "0x",
+            get_receipt=lambda t: {"status": 1},
+        )
+        blockchain_worker.stop(timeout=1)
+        assert len(joined) == 3

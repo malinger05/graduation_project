@@ -1,7 +1,7 @@
 """
 blockchain_worker.py  —  Layer 2 reconciliation worker
 
-Three background tasks, each in its own daemon thread, all going through
+Three background tasks, each in its own thread, all going through
 Spring Boot HTTP (admin_client) — never directly to PostgreSQL.
 
   1. submit-retry   : transactions stuck in PENDING_SUBMIT / FAILED_SUBMIT —
@@ -43,6 +43,9 @@ TAMPER_BATCH_SIZE  = config.WORKER_TAMPER_BATCH_SIZE
 TAMPER_LOOKBACK_HOURS = config.WORKER_TAMPER_LOOKBACK_HOURS
 
 MAX_SUBMIT_ATTEMPTS = config.WORKER_MAX_SUBMIT_ATTEMPTS
+
+_stop_event = threading.Event()
+_threads: list[threading.Thread] = []
 
 
 # ── Per-row helpers ───────────────────────────────────────────────────────────
@@ -170,16 +173,15 @@ def run_tamper_check_once(admin: AdminClient,
     return flagged
 
 
-# ── Daemon thread loops ───────────────────────────────────────────────────────
+# ── Background thread loops ───────────────────────────────────────────────────
 
-def _loop(name: str, interval: float, body: Callable[[], None]) -> None:
+def _loop(name: str, interval: float, body: Callable[[], None], stop_event: threading.Event) -> None:
     print(f"[Worker:{name}] loop started, interval={interval:.0f}s")
-    while True:
+    while not stop_event.wait(interval):
         try:
             body()
         except Exception as e:
             print(f"[Worker:{name}] iteration failed: {e}")
-        time.sleep(interval)
 
 
 def start(
@@ -187,11 +189,18 @@ def start(
     submit_to_chain: Callable[[str], str | None],
     get_receipt: Callable[[str], dict | None],
     verify_on_chain: Callable[[str], bool] | None = None,
+    stop_event: threading.Event | None = None,
 ) -> None:
     """
-    Spawn the three reconciliation daemons. Always started at middleware boot;
-    each iteration resolves AdminClient / chain callbacks (may be unavailable).
+    Spawn the three reconciliation worker threads. Always started at middleware
+    boot; each iteration resolves AdminClient / chain callbacks (may be unavailable).
     """
+    global _threads
+
+    event = stop_event or _stop_event
+    event.clear()
+    _threads = []
+
     def _retry_job() -> None:
         admin = get_admin()
         if admin is None:
@@ -211,21 +220,25 @@ def start(
             return
         run_tamper_check_once(admin, verify_on_chain)
 
-    threading.Thread(
-        target=_loop,
-        args=("retry", RETRY_INTERVAL_SECONDS, _retry_job),
-        daemon=True,
-        name="bc-worker-retry",
-    ).start()
-    threading.Thread(
-        target=_loop,
-        args=("confirm", CONFIRM_INTERVAL_SECONDS, _confirm_job),
-        daemon=True,
-        name="bc-worker-confirm",
-    ).start()
-    threading.Thread(
-        target=_loop,
-        args=("tamper", TAMPER_INTERVAL_SECONDS, _tamper_job),
-        daemon=True,
-        name="bc-worker-tamper",
-    ).start()
+    for name, interval, job in (
+        ("retry", RETRY_INTERVAL_SECONDS, _retry_job),
+        ("confirm", CONFIRM_INTERVAL_SECONDS, _confirm_job),
+        ("tamper", TAMPER_INTERVAL_SECONDS, _tamper_job),
+    ):
+        t = threading.Thread(
+            target=_loop,
+            args=(name, interval, job, event),
+            daemon=False,
+            name=f"bc-worker-{name}",
+        )
+        t.start()
+        _threads.append(t)
+
+
+def stop(timeout: float = 15.0) -> None:
+    """Signal worker loops to exit and wait for threads to finish."""
+    _stop_event.set()
+    deadline = time.monotonic() + timeout
+    for t in _threads:
+        remaining = max(0.0, deadline - time.monotonic())
+        t.join(timeout=remaining)

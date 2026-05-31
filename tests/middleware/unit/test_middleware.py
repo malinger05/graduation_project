@@ -143,11 +143,40 @@ def test_health_returns_payload():
     assert body["service"] == "ATM Middleware"
 
 
+def test_health_ready_all_ok(monkeypatch):
+    import middleware
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(middleware, "_probe_middleware_db", lambda: {"status": "ok"})
+    monkeypatch.setattr(middleware, "_probe_core_banking", lambda: {"status": "ok"})
+    monkeypatch.setattr(middleware, "_probe_blockchain_rpc", lambda: {"status": "skipped"})
+    monkeypatch.setattr(middleware.blockchain_worker, "start", lambda *a, **k: None)
+
+    with TestClient(middleware.app) as client:
+        resp = client.get("/health/ready")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ready"
+
+
+def test_health_ready_returns_503_when_core_banking_down(monkeypatch):
+    import middleware
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(middleware, "_probe_middleware_db", lambda: {"status": "ok"})
+    monkeypatch.setattr(middleware, "_probe_core_banking", lambda: {"status": "down", "detail": "timeout"})
+    monkeypatch.setattr(middleware, "_probe_blockchain_rpc", lambda: {"status": "skipped"})
+    monkeypatch.setattr(middleware.blockchain_worker, "start", lambda *a, **k: None)
+
+    with TestClient(middleware.app) as client:
+        resp = client.get("/health/ready")
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "not_ready"
+
+
 def test_hash_and_persist_no_admin(monkeypatch):
     import middleware
 
     monkeypatch.setattr(middleware, "hash_transaction", lambda **kwargs: "HASH123")
-    monkeypatch.setattr(middleware, "_submit_to_blockchain", lambda hash_str: "0xtx")
     monkeypatch.setattr(middleware, "_get_admin_client", lambda: None)
 
     out_hash, out_tx = middleware._hash_and_persist(
@@ -160,26 +189,25 @@ def test_hash_and_persist_no_admin(monkeypatch):
         created_at="2026-01-01T00:00:00Z",
     )
     assert out_hash == "HASH123"
-    assert out_tx == "0xtx"
+    assert out_tx is None
 
 
-def test_hash_and_persist_handles_submit_exception(monkeypatch):
+def test_hash_and_persist_patches_hash_without_inline_submit(monkeypatch):
     import middleware
 
     class _Admin:
         def __init__(self):
-            self.called = False
+            self.kwargs = None
 
         def patch_blockchain(self, **kwargs):
-            self.called = True
+            self.kwargs = kwargs
+
+    def _must_not_submit(_h):
+        raise AssertionError("hot path must not submit")
 
     admin = _Admin()
     monkeypatch.setattr(middleware, "hash_transaction", lambda **kwargs: "HASHERR")
-
-    def _raise(*args, **kwargs):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(middleware, "_submit_to_blockchain", _raise)
+    monkeypatch.setattr(middleware, "_submit_to_blockchain", _must_not_submit)
     monkeypatch.setattr(middleware, "_get_admin_client", lambda: admin)
 
     out_hash, out_tx = middleware._hash_and_persist(
@@ -193,7 +221,8 @@ def test_hash_and_persist_handles_submit_exception(monkeypatch):
     )
     assert out_hash == "HASHERR"
     assert out_tx is None
-    assert admin.called is True
+    assert admin.kwargs["canonical_hash"] == "HASHERR"
+    assert admin.kwargs["blockchain_tx"] is None
 
 
 def test_atm_session_continue_success_and_failure(monkeypatch):

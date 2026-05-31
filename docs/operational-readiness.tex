@@ -1,0 +1,55 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\title{Operational Readiness Improvements (P1)}
+\author{ATM Middleware \& Core Banking}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Motivation}
+Three gaps threatened production readiness: shallow health checks, abrupt shutdown of background workers, and synchronous Sepolia RPC calls on the deposit/withdraw hot path.
+
+\section{Health Checks}
+\subsection{Middleware (Layer~2)}
+\begin{itemize}[noitemsep]
+  \item \texttt{GET /health} --- liveness probe; returns static JSON when the process is up.
+  \item \texttt{GET /health/ready} --- readiness probe; checks middleware DB, Core Banking (\texttt{/actuator/health}), and Sepolia RPC (when configured). Returns HTTP~503 if a required dependency is down.
+\end{itemize}
+
+\subsection{Core Banking (Layer~3)}
+\begin{itemize}[noitemsep]
+  \item Added \texttt{spring-boot-starter-actuator} with \texttt{/actuator/health} permitted without authentication.
+  \item Enabled \texttt{server.shutdown=graceful} for in-flight request drain.
+\end{itemize}
+
+\subsection{Demo launcher}
+\texttt{scripts/run\_demo.sh} now waits on HTTP health endpoints instead of raw TCP port checks.
+
+\section{Graceful Shutdown}
+\begin{itemize}[noitemsep]
+  \item Session cleanup, retention, cert monitor, and blockchain worker threads are non-daemon and share a shutdown event.
+  \item FastAPI lifespan sets stop signals, calls \texttt{blockchain\_worker.stop()}, and joins threads before exit.
+  \item Uvicorn runs with \texttt{--timeout-graceful-shutdown 30}; demo scripts send SIGTERM and wait before SIGKILL.
+  \item \texttt{idempotency.abort()} releases \texttt{in\_progress} rows on deposit/withdraw failure so retries are not blocked for 60\,s.
+\end{itemize}
+
+\section{Blockchain Off the Hot Path}
+Deposit and withdraw no longer call \texttt{\_submit\_to\_blockchain()} inline. The request path:
+\begin{enumerate}[noitemsep]
+  \item Core Banking commits the transaction (\texttt{PENDING\_SUBMIT}).
+  \item Middleware computes the canonical hash and PATCHes it to Core Banking.
+  \item Response returns immediately; the existing \texttt{blockchain\_worker} submit-retry loop owns all Sepolia submissions.
+\end{enumerate}
+Banking UX is therefore independent of RPC latency.
+
+\section{Repositories}
+\begin{itemize}[noitemsep]
+  \item \texttt{graduation\_project} --- branch \texttt{fix/operational-readiness}
+  \item \texttt{core-banking-system} --- branch \texttt{fix/operational-readiness}
+\end{itemize}
+
+\end{document}
