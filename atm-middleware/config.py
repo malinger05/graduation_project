@@ -118,3 +118,38 @@ CLIENT_CERT_ENFORCE_ALLOWLIST = _str("CLIENT_CERT_ENFORCE_ALLOWLIST", "1").strip
     "false",
     "no",
 )
+
+# ── Fraud detection ──────────────────────────────────────────────────────────
+
+FRAUD_DETECTION_ENABLED = _str("FRAUD_DETECTION_ENABLED", "1").strip().lower() not in (
+    "0", "false", "no",
+)
+
+# Cold-start guard: behavioural checks stay OFF until the account has at least
+# this many completed transactions. A first / large transaction is never flagged
+# as suspicious just because there is no baseline yet.
+FRAUD_MIN_HISTORY_FOR_ANOMALY = _int("FRAUD_MIN_HISTORY_FOR_ANOMALY", 5)
+# Minimum same-direction samples before the relative-amount check can fire.
+FRAUD_ANOMALY_MIN_SAMPLES = _int("FRAUD_ANOMALY_MIN_SAMPLES", 3)
+
+# Universal velocity / limit controls (apply to every account, new or not).
+FRAUD_VELOCITY_MAX_TXNS_PER_HOUR = _int("FRAUD_VELOCITY_MAX_TXNS_PER_HOUR", 10)
+FRAUD_DAILY_WITHDRAWAL_LIMIT     = _float("FRAUD_DAILY_WITHDRAWAL_LIMIT", 2000.0)
+FRAUD_LARGE_CASH_THRESHOLD       = _float("FRAUD_LARGE_CASH_THRESHOLD", 10000.0)
+
+# Behavioural thresholds (gated by the cold-start guard above).
+FRAUD_ANOMALY_MULTIPLIER = _float("FRAUD_ANOMALY_MULTIPLIER", 3.0)
+FRAUD_DORMANCY_DAYS      = _int("FRAUD_DORMANCY_DAYS", 90)
+
+# Overnight window (UTC hours). A single night transaction is just a breadcrumb;
+# repeated overnight activity is reviewed (behavioural, gated).
+FRAUD_NIGHT_START_HOUR = _int("FRAUD_NIGHT_START_HOUR", 0)
+FRAUD_NIGHT_END_HOUR   = _int("FRAUD_NIGHT_END_HOUR", 5)
+FRAUD_NIGHT_MAX_TXNS   = _int("FRAUD_NIGHT_MAX_TXNS", 3)
+
+# Dispense-reversal abuse (universal — abnormal even for a brand-new account).
+FRAUD_MAX_REVERSALS_24H = _int("FRAUD_MAX_REVERSALS_24H", 2)
+
+# Login brute-force spread across many cards from one terminal (cert serial).
+FRAUD_LOGIN_MAX_FAILS_PER_SOURCE_15M    = _int("FRAUD_LOGIN_MAX_FAILS_PER_SOURCE_15M", 15)
+FRAUD_LOGIN_MAX_ACCOUNTS_PER_SOURCE_15M = _int("FRAUD_LOGIN_MAX_ACCOUNTS_PER_SOURCE_15M", 5)

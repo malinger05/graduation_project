@@ -91,6 +91,8 @@ def init_db() -> bool:
     _migrate_login_lockouts(_engine)
     _migrate_session_state(_engine)
     _migrate_transaction_logs_client_cert(_engine)
+    _migrate_transaction_logs_fraud(_engine)
+    
     _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
     return True
 
@@ -148,6 +150,19 @@ def _migrate_transaction_logs_client_cert(engine: Engine) -> None:
             text(
                 "ALTER TABLE transaction_logs "
                 "ADD COLUMN IF NOT EXISTS client_cert_serial VARCHAR"
+            )
+        )
+
+
+def _migrate_transaction_logs_fraud(engine: Engine) -> None:
+    """Add fraud_signals column to transaction_logs on existing deployments."""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE transaction_logs "
+                "ADD COLUMN IF NOT EXISTS fraud_signals JSONB"
             )
         )
 

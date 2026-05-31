@@ -24,7 +24,7 @@ set -euo pipefail
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CORE_BANKING_DIR="${CORE_BANKING_DIR:-$(cd "$ROOT/.." && pwd)/core-banking-system}"
+CORE_BANKING_DIR="${CORE_BANKING_DIR:-/Users/azizsattarov/Desktop/Spring_Boot_Tutorial/core-banking}"
 TLS_DIR="${ATM_TLS_DIR:-$HOME/atm-tls}"
 VENV_DIR="${VENV_DIR:-$ROOT/atm_venv}"
 LOG_DIR="$ROOT/.demo-logs"
