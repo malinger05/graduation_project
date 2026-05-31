@@ -45,6 +45,14 @@ class TestAdminClientReads:
         assert "submitted" in mock_get.call_args.args[0]
 
     @patch("cb_http.get")
+    def test_get_failed_submit(self, mock_get, client):
+        mock_get.return_value = MagicMock(ok=True, json=lambda: [{"transactionId": 9}])
+        rows = client.get_failed_submit(limit=20)
+        assert rows[0]["transactionId"] == 9
+        assert "failed-submit" in mock_get.call_args.args[0]
+        assert mock_get.call_args.kwargs["params"] == {"limit": 20}
+
+    @patch("cb_http.get")
     def test_get_for_tamper_check_with_since(self, mock_get, client):
         mock_get.return_value = MagicMock(ok=True, json=lambda: [])
         client.get_for_tamper_check(since_iso="2026-01-01T00:00:00", limit=50)
@@ -71,6 +79,13 @@ class TestAdminClientWrites:
         assert body["canonicalHash"] == "abc"
         assert body["blockchainTx"] == "0x1"
         assert "99" in mock_patch.call_args.args[0]
+
+    @patch("cb_http.post")
+    def test_retry_blockchain_submit(self, mock_post, client):
+        mock_post.return_value = MagicMock(ok=True, json=lambda: {"chainStatus": "PENDING_SUBMIT"})
+        out = client.retry_blockchain_submit(7)
+        assert out["chainStatus"] == "PENDING_SUBMIT"
+        assert mock_post.call_args.args[0].endswith("/7/retry-blockchain")
 
     @patch("cb_http.patch")
     def test_patch_confirm(self, mock_patch, client):

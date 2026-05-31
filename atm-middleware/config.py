@@ -37,6 +37,20 @@ def _float(name: str, default: float) -> float:
 
 MIDDLEWARE_DB_URL = _str("MIDDLEWARE_DB_URL")
 
+# When true (default), middleware refuses to start without MIDDLEWARE_DB_URL.
+# Set MIDDLEWARE_REQUIRE_DB=0 only for local experiments without Postgres.
+MIDDLEWARE_REQUIRE_DB = _str("MIDDLEWARE_REQUIRE_DB", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+# SQLAlchemy pool (middleware Postgres only)
+MW_DB_POOL_SIZE = _int("MW_DB_POOL_SIZE", 5)
+MW_DB_POOL_MAX_OVERFLOW = _int("MW_DB_POOL_MAX_OVERFLOW", 10)
+MW_DB_POOL_RECYCLE_SECONDS = _int("MW_DB_POOL_RECYCLE_SECONDS", 1800)
+
 # ── Core Banking bridge ──────────────────────────────────────────────────────
 
 CORE_BANKING_URL = _str("CORE_BANKING_URL", "https://api.local").rstrip("/")
@@ -88,6 +102,8 @@ WORKER_CONFIRM_BATCH_SIZE       = _int("WORKER_CONFIRM_BATCH_SIZE", 25)
 WORKER_TAMPER_BATCH_SIZE        = _int("WORKER_TAMPER_BATCH_SIZE",  100)
 WORKER_TAMPER_LOOKBACK_HOURS    = _int("WORKER_TAMPER_LOOKBACK_HOURS", 24)
 WORKER_MAX_SUBMIT_ATTEMPTS      = _int("WORKER_MAX_SUBMIT_ATTEMPTS", 8)
+WORKER_FAILED_ALERT_INTERVAL_SECONDS = _float("WORKER_FAILED_ALERT_INTERVAL_SECONDS", 120)
+WORKER_FAILED_ALERT_BATCH_SIZE  = _int("WORKER_FAILED_ALERT_BATCH_SIZE", 50)
 
 # ── Retention (middleware DB) ────────────────────────────────────────────────
 

@@ -53,6 +53,25 @@ class AdminClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_failed_submit(self, limit: int = 50) -> list[dict]:
+        resp = cb_http.get(
+            f"{self.base_url}/admin/transactions/failed-submit",
+            headers=self._headers(),
+            params={"limit": limit},
+            timeout=(3, 12),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def retry_blockchain_submit(self, transaction_id: int) -> dict:
+        resp = cb_http.post(
+            f"{self.base_url}/admin/transactions/{transaction_id}/retry-blockchain",
+            headers=self._headers(),
+            timeout=(3, 12),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def get_for_tamper_check(self, since_iso: str | None = None, limit: int = 100) -> list[dict]:
         params: dict[str, Any] = {"limit": limit}
         if since_iso:

@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
+import blockchain_dlq
 import config
 from admin_client import AdminClient
 from canonical import hash_transaction
@@ -43,6 +44,9 @@ TAMPER_BATCH_SIZE  = config.WORKER_TAMPER_BATCH_SIZE
 TAMPER_LOOKBACK_HOURS = config.WORKER_TAMPER_LOOKBACK_HOURS
 
 MAX_SUBMIT_ATTEMPTS = config.WORKER_MAX_SUBMIT_ATTEMPTS
+
+FAILED_ALERT_INTERVAL_SECONDS = config.WORKER_FAILED_ALERT_INTERVAL_SECONDS
+FAILED_ALERT_BATCH_SIZE       = config.WORKER_FAILED_ALERT_BATCH_SIZE
 
 
 # ── Per-row helpers ───────────────────────────────────────────────────────────
@@ -170,6 +174,36 @@ def run_tamper_check_once(admin: AdminClient,
     return flagged
 
 
+# ── Job 4: failed-submit alert (DLQ) ─────────────────────────────────────────
+
+def run_failed_submit_alert_once(admin: AdminClient) -> int:
+    """
+    Poll Core Banking for FAILED_SUBMIT rows and emit a one-time alert per tx.
+    Returns number of alerts sent this sweep.
+    """
+    rows = admin.get_failed_submit(limit=FAILED_ALERT_BATCH_SIZE)
+    alerted = 0
+    for row in rows:
+        tx_id = row.get("transactionId")
+        if tx_id is None:
+            continue
+        err = row.get("lastSubmitError") or row.get("submitError")
+        acct = row.get("accountNumber")
+        if not blockchain_dlq.record_and_should_alert(
+            int(tx_id),
+            account_number=acct,
+            last_error=err,
+        ):
+            continue
+        print(
+            f"[Worker:dlq] ALERT tx {tx_id} account={acct or '?'} "
+            f"FAILED_SUBMIT — {(err or 'no error detail')[:200]}"
+        )
+        blockchain_dlq.mark_notified(int(tx_id))
+        alerted += 1
+    return alerted
+
+
 # ── Daemon thread loops ───────────────────────────────────────────────────────
 
 def _loop(name: str, interval: float, body: Callable[[], None]) -> None:
@@ -211,6 +245,12 @@ def start(
             return
         run_tamper_check_once(admin, verify_on_chain)
 
+    def _failed_alert_job() -> None:
+        admin = get_admin()
+        if admin is None:
+            return
+        run_failed_submit_alert_once(admin)
+
     threading.Thread(
         target=_loop,
         args=("retry", RETRY_INTERVAL_SECONDS, _retry_job),
@@ -228,4 +268,10 @@ def start(
         args=("tamper", TAMPER_INTERVAL_SECONDS, _tamper_job),
         daemon=True,
         name="bc-worker-tamper",
+    ).start()
+    threading.Thread(
+        target=_loop,
+        args=("dlq", FAILED_ALERT_INTERVAL_SECONDS, _failed_alert_job),
+        daemon=True,
+        name="bc-worker-dlq",
     ).start()

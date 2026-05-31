@@ -156,9 +156,13 @@ python3 scripts/manage_secrets.py set MIDDLEWARE_SERVICE_TOKEN
 python3 scripts/manage_secrets.py set CONTRACT_ADDRESS
 python3 scripts/manage_secrets.py set ETH_PRIVATE_KEY
 python3 scripts/manage_secrets.py set MIDDLEWARE_DB_URL
+# Örnek: postgresql+psycopg://mwuser:mwpass@localhost:5433/mwdb
 ```
 
 `MIDDLEWARE_SERVICE_TOKEN` değeri, Core Banking tarafındaki ile **aynı** olmalı.
+
+Middleware, `MIDDLEWARE_DB_URL` olmadan varsayılan olarak **başlamaz** (`MIDDLEWARE_REQUIRE_DB=1`).
+Yalnızca yerel deneyler için `MIDDLEWARE_REQUIRE_DB=0` kullanın (session/idempotency bellekte kalır).
 
 ---
 
