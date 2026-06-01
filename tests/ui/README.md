@@ -23,13 +23,19 @@ pytest -m "not ui"
 
 ## What is covered
 
-| Test | Flow |
-|------|------|
-| Idle screen | `/atm` loads welcome + action buttons |
-| Invalid PIN | Login error message |
-| Login | Balance flow after successful auth |
-| Deposit | Login → amount → success, balance +$50 |
-| Withdraw | Login → amount → menu, balance −$20 |
+| Test file | Flow |
+|-----------|------|
+| `test_atm_ui.py` | Idle screen, invalid PIN, login, deposit, withdraw |
+| `test_atm_lockout_ui.py` | Progressive lockout (3 wrong PINs), countdown timer, return to idle, account step after lock, locked card pre-check |
+
+### Lockout tests (mocked)
+
+- 1st / 2nd wrong PIN → error on PIN step with attempts remaining (2, then 1)
+- 3rd wrong PIN → **Account Locked** screen with `MM:SS` countdown
+- Countdown ticks down every second
+- When timer ends → **idle** welcome screen
+- New login after lock → starts at **account number** step again
+- Card already locked → locked screen before PIN entry
 
 ## Full-stack UI (optional)
 

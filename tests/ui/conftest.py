@@ -105,4 +105,5 @@ def atm_url(atm_base_url: str) -> str:
 def reset_mock_balance(mock_state: MockState):
     mock_state.balance = 500.0
     mock_state.next_transaction_id = 100
+    mock_state.reset_lockouts()
     yield
