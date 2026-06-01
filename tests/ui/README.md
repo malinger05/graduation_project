@@ -12,8 +12,11 @@ Middleware and Core Banking are **mocked in-process** so you do not need the ful
 ## Run
 
 ```bash
-pytest tests/ui -v -m ui
+cd /Users/silanurozkan/graduation_project
+python -m pytest tests/ui -v -m ui
 ```
+
+(`python -m pytest` ensures the repo root is on `PYTHONPATH`; plain `pytest` also works after `pythonpath = .` in `pytest.ini`.)
 
 Skip UI tests in normal CI/unit runs:
 

@@ -11,7 +11,7 @@ from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
-from tests.ui.helpers import (
+from .helpers import (
     click_idle_flow,
     enter_account_and_continue,
     enter_account_number_only,
