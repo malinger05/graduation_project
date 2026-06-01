@@ -4,7 +4,6 @@ Selenium UI tests for login lockout, countdown timer, and post-lock recovery.
 from __future__ import annotations
 
 import re
-import time
 
 import pytest
 from selenium.common.exceptions import TimeoutException
@@ -85,10 +84,16 @@ class TestAtmLockoutProgressive:
             wait_login_error(driver)
 
         wait_locked_screen(driver)
+        WebDriverWait(driver, 12).until(
+            lambda d: get_lock_countdown_text(d) != "--:--"
+        )
         first = get_lock_countdown_text(driver)
-        time.sleep(2)
-        second = get_lock_countdown_text(driver)
-        assert first != second
+
+        def _countdown_changed(d):
+            cur = get_lock_countdown_text(d)
+            return cur != first and cur != "--:--"
+
+        WebDriverWait(driver, 5).until(_countdown_changed)
 
 
 class TestAtmLockoutRecovery:
