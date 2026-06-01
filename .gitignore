@@ -136,7 +136,11 @@ celerybeat.pid
 
 # Environments
 .env
+.env.save
 .envrc
+
+# Selenium UI test artifacts
+.ui-test-screenshots/
 
 # Local crypto / DB secrets (this project)
 encryption_key.key
