@@ -206,3 +206,4 @@ class BlockchainDlq(Base):
     failed_at      = Column(DateTime(timezone=True), nullable=False)
     updated_at     = Column(DateTime(timezone=True), nullable=False)
     notified_at    = Column(DateTime(timezone=True), nullable=True)
+    notified_at    = Column(DateTime(timezone=True), nullable=True)
