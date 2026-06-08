@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
+import blockchain_dlq
 import config
 from admin_client import AdminClient
 from canonical import hash_transaction
@@ -46,6 +47,8 @@ MAX_SUBMIT_ATTEMPTS = config.WORKER_MAX_SUBMIT_ATTEMPTS
 
 _stop_event = threading.Event()
 _threads: list[threading.Thread] = []
+FAILED_ALERT_INTERVAL_SECONDS = config.WORKER_FAILED_ALERT_INTERVAL_SECONDS
+FAILED_ALERT_BATCH_SIZE       = config.WORKER_FAILED_ALERT_BATCH_SIZE
 
 
 # ── Per-row helpers ───────────────────────────────────────────────────────────
@@ -173,6 +176,36 @@ def run_tamper_check_once(admin: AdminClient,
     return flagged
 
 
+# ── Job 4: failed-submit alert (DLQ) ─────────────────────────────────────────
+
+def run_failed_submit_alert_once(admin: AdminClient) -> int:
+    """
+    Poll Core Banking for FAILED_SUBMIT rows and emit a one-time alert per tx.
+    Returns number of alerts sent this sweep.
+    """
+    rows = admin.get_failed_submit(limit=FAILED_ALERT_BATCH_SIZE)
+    alerted = 0
+    for row in rows:
+        tx_id = row.get("transactionId")
+        if tx_id is None:
+            continue
+        err = row.get("lastSubmitError") or row.get("submitError")
+        acct = row.get("accountNumber")
+        if not blockchain_dlq.record_and_should_alert(
+            int(tx_id),
+            account_number=acct,
+            last_error=err,
+        ):
+            continue
+        print(
+            f"[Worker:dlq] ALERT tx {tx_id} account={acct or '?'} "
+            f"FAILED_SUBMIT — {(err or 'no error detail')[:200]}"
+        )
+        blockchain_dlq.mark_notified(int(tx_id))
+        alerted += 1
+    return alerted
+
+
 # ── Background thread loops ───────────────────────────────────────────────────
 
 def _loop(name: str, interval: float, body: Callable[[], None], stop_event: threading.Event) -> None:
@@ -192,8 +225,9 @@ def start(
     stop_event: threading.Event | None = None,
 ) -> None:
     """
-    Spawn the three reconciliation worker threads. Always started at middleware
-    boot; each iteration resolves AdminClient / chain callbacks (may be unavailable).
+    Spawn reconciliation worker threads (retry, confirm, tamper, dlq). Always
+    started at middleware boot; each iteration resolves AdminClient / chain
+    callbacks (may be unavailable).
     """
     global _threads
 
@@ -220,10 +254,17 @@ def start(
             return
         run_tamper_check_once(admin, verify_on_chain)
 
+    def _failed_alert_job() -> None:
+        admin = get_admin()
+        if admin is None:
+            return
+        run_failed_submit_alert_once(admin)
+
     for name, interval, job in (
         ("retry", RETRY_INTERVAL_SECONDS, _retry_job),
         ("confirm", CONFIRM_INTERVAL_SECONDS, _confirm_job),
         ("tamper", TAMPER_INTERVAL_SECONDS, _tamper_job),
+        ("dlq", FAILED_ALERT_INTERVAL_SECONDS, _failed_alert_job),
     ):
         t = threading.Thread(
             target=_loop,

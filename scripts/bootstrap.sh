@@ -121,7 +121,7 @@ fi
 if secret_is_set MIDDLEWARE_DB_URL; then
   ok "MIDDLEWARE_DB_URL already set"
 else
-  set_secret_value MIDDLEWARE_DB_URL "postgresql+psycopg://mwuser:mwpass@localhost:5433/mwuser"
+  set_secret_value MIDDLEWARE_DB_URL "postgresql+psycopg://mwuser:mwpass@localhost:5433/mwdb"
   ok "MIDDLEWARE_DB_URL set to local default"
 fi
 

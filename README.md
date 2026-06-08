@@ -79,6 +79,9 @@ scripts/run_demo.sh         # start the full stack in order
 **shared** team secrets (`CONTRACT_ADDRESS`, `ETH_PRIVATE_KEY`,
 `MIDDLEWARE_SERVICE_TOKEN`) — get those from a teammate out-of-band. The
 sections below explain each step in detail and the manual alternative.
+## Raspberry Pi deployment
+
+Step-by-step kiosk setup (Turkish): [`docs/RASPBERRY_PI_SETUP.md`](docs/RASPBERRY_PI_SETUP.md)
 
 ## 1) Prerequisites
 

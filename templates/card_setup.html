@@ -70,6 +70,96 @@
     </div>
   </div>
 
+  {% elif step == "fingerprint" %}
+  <!-- ── Step 2: Fingerprint enroll / verify ─────────────────────────────── -->
+  <div class="setup-hero green-hero">
+    <div class="setup-hero-inner">
+      <h1 class="setup-headline">{% if had_existing_cards %}Verify fingerprint{% else %}Register fingerprint{% endif %}</h1>
+      <p class="setup-sub">Card issued: <span style="font-family:var(--mono);">{{ masked_card }}</span></p>
+    </div>
+  </div>
+
+  <div class="setup-body">
+    <div class="setup-body-inner">
+      <div class="info-box green-info">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+        {% if had_existing_cards %}
+        Place the finger you registered with your first card on the sensor.
+        {% else %}
+        Register your fingerprint with three scans of the same finger, then continue to PIN setup.
+        {% endif %}
+      </div>
+
+      <div id="web-fp-status" style="padding:16px;border-radius:10px;background:rgba(61,184,138,0.06);border:1px solid rgba(61,184,138,0.15);font-size:13px;color:var(--muted);min-height:48px;">
+        Starting sensor…
+      </div>
+      <div id="web-fp-error" class="form-error" style="display:none;"></div>
+
+      <div class="tx-actions" id="web-fp-actions" style="display:none;">
+        <a href="{{ url_for('card_setup') }}" class="tx-back">Start over</a>
+        <button type="button" class="tx-confirm green" id="web-fp-retry">Try again</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    var pollTimer = null;
+    var statusEl = document.getElementById('web-fp-status');
+    var errEl = document.getElementById('web-fp-error');
+    var actionsEl = document.getElementById('web-fp-actions');
+    var retryBtn = document.getElementById('web-fp-retry');
+
+    function showError(msg) {
+      errEl.textContent = msg;
+      errEl.style.display = 'block';
+      actionsEl.style.display = 'grid';
+    }
+
+    function poll() {
+      fetch('/card-setup/fingerprint/status')
+        .then(function (r) { return r.json(); })
+        .then(function (st) {
+          var msg = st.message || 'Processing…';
+          if (st.step && st.total) msg += ' (' + st.step + '/' + st.total + ')';
+          statusEl.textContent = msg;
+          if (st.done && st.ok) {
+            clearInterval(pollTimer);
+            window.location.href = "{{ url_for('card_setup') }}?step=pin";
+          } else if (st.done && !st.ok) {
+            clearInterval(pollTimer);
+            showError(st.error || st.message || 'Fingerprint step failed.');
+          }
+        })
+        .catch(function () {
+          clearInterval(pollTimer);
+          showError('Cannot reach server.');
+        });
+    }
+
+    function start() {
+      errEl.style.display = 'none';
+      actionsEl.style.display = 'none';
+      statusEl.textContent = 'Starting sensor…';
+      fetch('/card-setup/fingerprint/start', { method: 'POST' })
+        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(function (res) {
+          if (!res.ok) {
+            showError(res.d.error || 'Could not start fingerprint step.');
+            return;
+          }
+          if (pollTimer) clearInterval(pollTimer);
+          pollTimer = setInterval(poll, 800);
+          poll();
+        })
+        .catch(function () { showError('Cannot reach server.'); });
+    }
+
+    if (retryBtn) retryBtn.addEventListener('click', start);
+    start();
+  })();
+  </script>
+
   {% elif step == "pin" %}
   <!-- ── Step 2: Set PIN ────────────────────────────────────────────────── -->
   <div class="setup-hero green-hero">

@@ -156,7 +156,16 @@ async def lifespan(app: FastAPI):
     print(f"[Middleware] Core Banking: {CORE_BANKING_URL}")
 
     try:
-        if db.init_db():
+        db_ready = db.init_db()
+        if not db_ready:
+            if config.MIDDLEWARE_REQUIRE_DB:
+                raise RuntimeError(
+                    "MIDDLEWARE_DB_URL is required but not set. "
+                    "Run: python3 scripts/manage_secrets.py set MIDDLEWARE_DB_URL "
+                    "(see .env.example). For local experiments only: MIDDLEWARE_REQUIRE_DB=0"
+                )
+            print("[Middleware] Operational DB: disabled (MIDDLEWARE_DB_URL unset)")
+        elif db_ready:
             print(f"[Middleware] Operational DB: {db.get_db_url()}")
             if config.TRANSACTION_LOG_RETENTION_DAYS > 0:
                 print(
@@ -173,8 +182,6 @@ async def lifespan(app: FastAPI):
                     f"[Middleware] Client cert monitor: {len(allowed)} allowed serial(s), "
                     f"{enforce}, scan every {config.CLIENT_CERT_MONITOR_INTERVAL_SECONDS}s"
                 )
-        else:
-            print("[Middleware] Operational DB: disabled (MIDDLEWARE_DB_URL unset)")
     except Exception as e:
         print(f"[Middleware] Operational DB: FAILED to initialize: {e}")
         raise
@@ -573,6 +580,12 @@ class SetOwnPinRequest(BaseModel):
 
 class PrepareOwnPinRequest(BaseModel):
     accountNumber: str
+    cardNumber: str | None = None
+
+
+class RegisterFingerprintRequest(BaseModel):
+    accountNumber: str
+    fingerprintSlotId: int
 
 
 def _require_service_token(x_service_token: str | None) -> None:
@@ -1093,9 +1106,43 @@ def atm_prepare_own_pin(req: PrepareOwnPinRequest):
     if not account_number:
         raise HTTPException(400, "accountNumber is required.")
 
+    payload: dict = {"accountNumber": account_number}
+    if req.cardNumber:
+        payload["cardNumber"] = req.cardNumber.strip().replace(" ", "")
+
     resp = cb_http.post(
         f"{CORE_BANKING_URL}/atm/prepare-own-pin",
-        json={"accountNumber": account_number},
+        json=payload,
+        headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
+        timeout=(3, 12),
+    )
+    if not resp.ok:
+        try:
+            detail = resp.json().get("error", resp.text)
+        except Exception:
+            detail = resp.text
+        raise HTTPException(resp.status_code, detail)
+
+    return resp.json()
+
+
+@app.post("/atm/register-fingerprint")
+def atm_register_fingerprint(req: RegisterFingerprintRequest):
+    """
+    Persist fingerprint sensor slot id on the account after first-time enrollment.
+    """
+    account_number = (req.accountNumber or "").strip().upper()
+    if not account_number:
+        raise HTTPException(400, "accountNumber is required.")
+    if req.fingerprintSlotId < 0:
+        raise HTTPException(400, "fingerprintSlotId must be non-negative.")
+
+    resp = cb_http.post(
+        f"{CORE_BANKING_URL}/atm/register-fingerprint",
+        json={
+            "accountNumber": account_number,
+            "fingerprintSlotId": req.fingerprintSlotId,
+        },
         headers={"X-Service-Token": SERVICE_TOKEN, "Content-Type": "application/json"},
         timeout=(3, 12),
     )
@@ -1671,4 +1718,4 @@ def atm_tx_status(
 if __name__ == "__main__":
     import uvicorn
     # 0.0.0.0: Caddy still reaches 127.0.0.1:8000; avoids macOS ghost binds on loopback.
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("middleware:app", host="0.0.0.0", port=8000, reload=False)
