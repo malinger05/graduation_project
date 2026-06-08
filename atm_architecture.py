@@ -150,6 +150,7 @@ class MiddlewareClient:
         return {
             "status": "ok",
             "accountNumber": self._account_number,
+            "fingerprintSlotId": data.get("fingerprintSlotId"),
             "account": {
                 "account_id": self._account_number,
                 "name": self._customer_name,

@@ -27,11 +27,13 @@ from atm_architecture import (
     TransactionsRepository,
 )
 from card_setup_fingerprint import (
+    apply_result_to_pending,
     apply_result_to_setup,
     cancel_fingerprint,
     get_status as fingerprint_status,
     is_job_running,
     start_fingerprint,
+    start_login_verify,
 )
 
 app = Flask(__name__)
@@ -217,6 +219,55 @@ def _sync_fingerprint_session() -> None:
     _save_card_setup(updated)
 
 
+def _get_pending_login() -> dict | None:
+    return session.get("pending_login")
+
+
+def _save_pending_login(pending: dict) -> None:
+    session["pending_login"] = pending
+    session.modified = True
+
+
+def _require_pending_login() -> dict | tuple:
+    pending = _get_pending_login()
+    if not pending or not pending.get("atm_key"):
+        return (jsonify({"error": "Login session expired. Start again."}), 400)
+    return pending
+
+
+def _clear_pending_login() -> None:
+    pending = session.pop("pending_login", None)
+    if pending and pending.get("atm_key"):
+        _evict_atm_session(pending["atm_key"])
+    cancel_fingerprint()
+
+
+def _sync_login_fingerprint() -> None:
+    pending = _get_pending_login()
+    if not pending:
+        return
+    updated = apply_result_to_pending(pending)
+    _save_pending_login(updated)
+
+
+def _finalize_pending_login() -> dict:
+    pending = session.pop("pending_login", None)
+    if not pending:
+        raise ValueError("No pending login")
+    session["card_number"] = pending["card_number"]
+    session["account"] = pending["account"]
+    session["full_name"] = pending["full_name"]
+    session["user_id"] = pending["user_id"]
+    session["atm_key"] = pending["atm_key"]
+    return {
+        "status": "ok",
+        "full_name": pending["full_name"],
+        "balance": pending["balance"],
+        "card_number": pending["card_number"],
+        "account": pending["account"],
+    }
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -358,28 +409,94 @@ def login():
         )
         return jsonify({"status": "invalid", "message": msg}), 401
 
-    # Success — create session
+    # PIN ok — hold session until fingerprint verification completes
+    _clear_pending_login()
+
     import secrets as _s
-    atm_key           = _s.token_hex(8)
+    atm_key = _s.token_hex(8)
     transactions_repo = TransactionsRepository(accounts_repo)
-    atm               = ATMApp(accounts_repo, transactions_repo)
-    atm.current_account = auth_result.get("accountNumber", card_number)
+    atm = ATMApp(accounts_repo, transactions_repo)
+    account_number = auth_result.get("accountNumber", card_number)
+    atm.current_account = account_number
     _register_atm_session(atm_key, atm)
 
     user = auth_result.get("account", {})
-    session["card_number"] = card_number                              # CHANGED — primary session key
-    session["account"]     = auth_result.get("accountNumber", "")    # resolved account number for display
-    session["full_name"]   = user.get("name", "Customer")
-    session["user_id"]     = user.get("account_id", "")
-    session["atm_key"]     = atm_key
+    slot_id = auth_result.get("fingerprintSlotId")
+    if slot_id is None:
+        _evict_atm_session(atm_key)
+        return jsonify({
+            "status": "fingerprint_not_registered",
+            "message": "No fingerprint on file for this account. Complete card setup first.",
+        }), 403
+
+    _save_pending_login({
+        "card_number": card_number,
+        "account": account_number,
+        "full_name": user.get("name", "Customer"),
+        "balance": float(user.get("balance", 0)),
+        "user_id": user.get("account_id", ""),
+        "atm_key": atm_key,
+        "fingerprintSlotId": int(slot_id),
+        "fingerprintOk": False,
+    })
 
     return jsonify({
-        "status":      "ok",
-        "full_name":   user.get("name", "Customer"),
-        "balance":     float(user.get("balance", 0)),
+        "status": "fingerprint_required",
+        "full_name": user.get("name", "Customer"),
+        "balance": float(user.get("balance", 0)),
         "card_number": card_number,
-        "account":     auth_result.get("accountNumber", ""),
+        "account": account_number,
     })
+
+
+@app.route("/login/fingerprint/start", methods=["POST"])
+def login_fingerprint_start():
+    pending = _require_pending_login()
+    if isinstance(pending, tuple):
+        return pending
+
+    if pending.get("fingerprintOk"):
+        return jsonify({"status": "ok", "mode": "done", "message": "Fingerprint already verified."})
+
+    if is_job_running():
+        return jsonify({"status": "ok", "mode": fingerprint_status().get("mode"), "message": "Already running."})
+
+    ok, mode = start_login_verify(pending["account"], int(pending["fingerprintSlotId"]))
+    if not ok:
+        return jsonify({"error": mode}), 409
+    return jsonify({"status": "ok", "mode": mode}), 200
+
+
+@app.route("/login/fingerprint/status", methods=["GET"])
+def login_fingerprint_status():
+    pending = _require_pending_login()
+    if isinstance(pending, tuple):
+        return pending
+
+    _sync_login_fingerprint()
+    status = fingerprint_status()
+    pending = _get_pending_login() or {}
+
+    if pending.get("fingerprintOk"):
+        try:
+            body = _finalize_pending_login()
+        except ValueError:
+            return jsonify({"error": "Login session expired. Start again."}), 400
+        return jsonify({**status, **body, "fingerprintOk": True})
+
+    return jsonify(
+        {
+            **status,
+            "fingerprintOk": bool(pending.get("fingerprintOk")),
+            "fingerprintSlotId": pending.get("fingerprintSlotId"),
+        }
+    )
+
+
+@app.route("/login/fingerprint/cancel", methods=["POST"])
+def login_fingerprint_cancel():
+    _clear_pending_login()
+    return jsonify({"status": "ok"})
 
 
 @app.route("/card-setup", methods=["GET", "POST"])
@@ -738,6 +855,7 @@ def reset_pin():
 
 @app.route("/logout", methods=["POST"])
 def logout():
+    _clear_pending_login()
     key = session.get("atm_key")
     if key:
         _evict_atm_session(key)

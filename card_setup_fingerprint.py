@@ -202,3 +202,21 @@ def apply_result_to_setup(setup: dict[str, Any]) -> dict[str, Any]:
         if status.get("slot_id") is not None:
             setup["fingerprintSlotId"] = status["slot_id"]
     return setup
+
+
+def start_login_verify(account_number: str, expected_slot: int) -> tuple[bool, str]:
+    """Verify fingerprint during ATM secure login (identify only)."""
+    setup = {
+        "accountNumber": account_number,
+        "fingerprintSlotId": expected_slot,
+        "hadExistingCards": True,
+    }
+    return start_fingerprint(setup)
+
+
+def apply_result_to_pending(pending: dict[str, Any]) -> dict[str, Any]:
+    """Copy completed fingerprint job result into pending login session dict."""
+    status = get_status()
+    if status.get("done") and status.get("ok"):
+        pending["fingerprintOk"] = True
+    return pending

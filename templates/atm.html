@@ -1881,34 +1881,74 @@
                   </div>
                   <div class="lstep" id="step3">
                     <div class="lstep-dot">3</div>
+                    <div class="lstep-label">Fingerprint</div>
+                  </div>
+                  <div class="lstep" id="step4">
+                    <div class="lstep-dot">4</div>
                     <div class="lstep-label">Verified</div>
                   </div>
                 </div>
-                <button class="btn btn-ghost btn-sm" onclick="goTo('idle')">
+                <button
+                  class="btn btn-ghost btn-sm"
+                  onclick="
+                    resetLogin();
+                    goTo('idle');
+                  "
+                >
                   Cancel
                 </button>
               </div>
               <div class="login-right">
-                <div class="login-heading" id="login-heading">
-                  Enter account number
+                <div id="login-panel-credentials">
+                  <div class="login-heading" id="login-heading">
+                    Enter account number
+                  </div>
+                  <div class="login-sub-text" id="login-sub">
+                    Your 10-digit account number
+                  </div>
+                  <div class="error-box" id="login-error"></div>
+                  <div class="field">
+                    <label id="login-field-label">Account Number</label>
+                    <input
+                      type="text"
+                      id="login-input"
+                      placeholder="e.g. 1000000001"
+                      autocomplete="off"
+                    />
+                  </div>
+                  <button class="btn btn-yellow btn-full" onclick="loginNext()">
+                    Continue →
+                  </button>
                 </div>
-                <div class="login-sub-text" id="login-sub">
-                  Your 10-digit account number
+                <div id="login-panel-fingerprint" style="display: none">
+                  <div class="login-heading">Verify fingerprint</div>
+                  <div class="login-sub-text" id="login-sub-fingerprint">
+                    Place the same finger you registered during card setup.
+                  </div>
+                  <div class="error-box" id="login-error-fingerprint"></div>
+                  <div
+                    id="login-fp-status"
+                    class="login-sub-text"
+                    style="
+                      margin-top: 16px;
+                      padding: 16px;
+                      border-radius: 10px;
+                      background: rgba(74, 144, 232, 0.08);
+                      border: 1px solid rgba(74, 144, 232, 0.2);
+                      min-height: 48px;
+                    "
+                  >
+                    Waiting to start…
+                  </div>
+                  <button
+                    class="btn btn-yellow btn-full"
+                    id="login-fp-retry-btn"
+                    onclick="startLoginFingerprint()"
+                    style="display: none; margin-top: 16px"
+                  >
+                    Try again
+                  </button>
                 </div>
-                <div class="error-box" id="login-error"></div>
-                <div class="field">
-                  <label id="login-field-label">Account Number</label>
-                  <input
-                    type="text"
-                    id="login-input"
-                    placeholder="e.g. 1000000001"
-                    autocomplete="off"
-                  />
-                </div>
-                <button class="btn btn-yellow btn-full" onclick="loginNext()">
-                  Continue →
-                </button>
-                <!-- Removed 'or' divider and 'New here? Set up your card & PIN' button -->
               </div>
             </div>
           </div>
@@ -2796,7 +2836,11 @@
         goTo('login');
       }
 
+      var _loginFpPollTimer = null;
+
       function resetLogin(){
+        if(_loginFpPollTimer){clearInterval(_loginFpPollTimer);_loginFpPollTimer=null;}
+        fetch('/login/fingerprint/cancel',{method:'POST'}).catch(function(){});
         S.loginStep=1;S.loginAccount='';
         document.getElementById('login-heading').textContent='Enter account number';
         document.getElementById('login-sub').textContent='Your 10-digit account number';
@@ -2805,9 +2849,89 @@
         document.getElementById('login-input').placeholder='e.g. 1000000001';
         document.getElementById('login-input').value='';
         document.getElementById('login-error').classList.remove('show');
+        document.getElementById('login-error-fingerprint').classList.remove('show');
+        document.getElementById('login-panel-credentials').style.display='';
+        document.getElementById('login-panel-fingerprint').style.display='none';
+        document.getElementById('login-fp-retry-btn').style.display='none';
+        document.getElementById('login-fp-status').textContent='Waiting to start…';
         document.getElementById('step1').className='lstep active';
         document.getElementById('step2').className='lstep';
         document.getElementById('step3').className='lstep';
+        document.getElementById('step4').className='lstep';
+      }
+
+      function loginAfterAuth(d){
+        S.account=d.account;S.name=d.full_name;S.balance=parseFloat(d.balance||0);
+        document.getElementById('step4').className='lstep done';
+        document.getElementById('status-account').textContent='ACC '+S.account;
+        setTimeout(function(){
+          if(S.flow==='balance'){showBalancePage();}
+          else if(S.flow==='withdraw'||S.flow==='deposit'){enterMenu();setTimeout(function(){doOp(S.flow);},300);}
+          else{enterMenu();}
+        },500);
+      }
+
+      function showLoginFingerprintStep(){
+        S.loginStep=3;
+        document.getElementById('step2').className='lstep done';
+        document.getElementById('step3').className='lstep active';
+        document.getElementById('login-panel-credentials').style.display='none';
+        document.getElementById('login-panel-fingerprint').style.display='';
+        startLoginFingerprint();
+      }
+
+      function pollLoginFingerprintStatus(){
+        fetch('/login/fingerprint/status')
+          .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+          .then(function(res){
+            if(!res.ok)return;
+            var st=res.d;
+            if(st.status==='ok'&&st.fingerprintOk){
+              clearInterval(_loginFpPollTimer);
+              _loginFpPollTimer=null;
+              document.getElementById('step3').className='lstep done';
+              document.getElementById('step4').className='lstep active';
+              loginAfterAuth(st);
+              return;
+            }
+            var msg=st.message||'Processing…';
+            if(st.step&&st.total){msg+=' ('+st.step+'/'+st.total+')';}
+            document.getElementById('login-fp-status').textContent=msg;
+            if(st.done&&!st.ok){
+              clearInterval(_loginFpPollTimer);
+              _loginFpPollTimer=null;
+              var err=document.getElementById('login-error-fingerprint');
+              err.textContent=st.error||st.message||'Fingerprint verification failed.';
+              err.classList.add('show');
+              document.getElementById('login-fp-retry-btn').style.display='';
+            }
+          })
+          .catch(function(){});
+      }
+
+      function startLoginFingerprint(){
+        var err=document.getElementById('login-error-fingerprint');
+        err.classList.remove('show');
+        document.getElementById('login-fp-retry-btn').style.display='none';
+        document.getElementById('login-fp-status').textContent='Starting sensor…';
+        fetch('/login/fingerprint/start',{method:'POST'})
+          .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+          .then(function(res){
+            if(!res.ok){
+              err.textContent=res.d.error||'Could not start fingerprint verification.';
+              err.classList.add('show');
+              document.getElementById('login-fp-retry-btn').style.display='';
+              return;
+            }
+            if(_loginFpPollTimer)clearInterval(_loginFpPollTimer);
+            _loginFpPollTimer=setInterval(pollLoginFingerprintStatus,800);
+            pollLoginFingerprintStatus();
+          })
+          .catch(function(){
+            err.textContent='Cannot reach server. Try again.';
+            err.classList.add('show');
+            document.getElementById('login-fp-retry-btn').style.display='';
+          });
       }
 
       function loginNext(){
@@ -2834,9 +2958,6 @@
 
         if(S.loginStep===2){
           if(!val){err.textContent='Enter your PIN.';err.classList.add('show');return;}
-          document.getElementById('step2').className='lstep done';
-          document.getElementById('step3').className='lstep active';
-          // POST to Flask
           fetch('/login',{
             method:'POST',
             headers:{'Content-Type':'application/x-www-form-urlencoded'},
@@ -2844,15 +2965,12 @@
           })
           .then(r=>r.json().then(d=>({ok:r.ok,d})))
           .then(({ok,d})=>{
-            if(d.status==='ok'){
-              S.account=d.account;S.name=d.full_name;S.balance=parseFloat(d.balance||0);
-              document.getElementById('step3').className='lstep done';
-              document.getElementById('status-account').textContent='ACC '+S.account;
-              setTimeout(()=>{
-                if(S.flow==='balance'){showBalancePage();}
-                else if(S.flow==='withdraw'||S.flow==='deposit'){enterMenu();setTimeout(()=>doOp(S.flow),300);}
-                else{enterMenu();}
-              },500);
+            if(d.status==='fingerprint_required'||d.status==='ok'){
+              showLoginFingerprintStep();
+            } else if(d.status==='fingerprint_not_registered'){
+              err.textContent=d.message||'No fingerprint on file. Complete card setup first.';
+              err.classList.add('show');
+              document.getElementById('login-input').value='';
             } else if(d.status==='pin_reset_required'){
               showPinResetRequired(d.account||S.loginAccount);
             } else if(d.status==='locked'){
@@ -2868,15 +2986,12 @@
                 showLocked(secs);
               }
             } else {
-              document.getElementById('step2').className='lstep active';
-              document.getElementById('step3').className='lstep';
               err.textContent=d.message||'Invalid credentials.';
               err.classList.add('show');
               document.getElementById('login-input').value='';
-              S.loginStep=2;
             }
           })
-          .catch(()=>{err.textContent='Cannot reach server. Try again.';err.classList.add('show');S.loginStep=2;document.getElementById('step2').className='lstep active';document.getElementById('step3').className='lstep';});
+          .catch(()=>{err.textContent='Cannot reach server. Try again.';err.classList.add('show');});
         }
       }
 

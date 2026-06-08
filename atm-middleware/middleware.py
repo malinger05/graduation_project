@@ -823,12 +823,13 @@ def atm_login(
     )
 
     body = {
-        "status":        "ok",
-        "sessionToken":  session_token,
-        "customerName":  data.get("customerName", "Customer"),
-        "cardNumber":    req.cardNumber,
-        "accountNumber": account_number,
-        "balance":       float(data.get("balance", 0)),
+        "status":            "ok",
+        "sessionToken":      session_token,
+        "customerName":      data.get("customerName", "Customer"),
+        "cardNumber":        req.cardNumber,
+        "accountNumber":     account_number,
+        "balance":           float(data.get("balance", 0)),
+        "fingerprintSlotId": data.get("fingerprintSlotId"),
         "account": {
             "account_id": account_number,
             "name":       data.get("customerName", "Customer"),
