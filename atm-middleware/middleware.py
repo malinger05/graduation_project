@@ -1630,4 +1630,4 @@ def atm_tx_status(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("middleware:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run("middleware:app", host="0.0.0.0", port=8000, reload=False)
