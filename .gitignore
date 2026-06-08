@@ -220,3 +220,8 @@ docs/diagrams/
 
 # Combined logs written by scripts/run_demo.sh
 .demo-logs/
+
+# Load-test seeded accounts, warmed sessions + result CSVs (loadtest/)
+loadtest/accounts.json
+loadtest/sessions.json
+loadtest/results*

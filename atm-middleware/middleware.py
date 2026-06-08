@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 
 import cb_http
 import requests
+import fraud_detection
 from dotenv import load_dotenv
 from typing import Any
 
@@ -300,6 +301,7 @@ def _audit(
     response_body: Any = None,
     error_message: str | None = None,
     correlation_id: str | None = None,
+    fraud_signals: Any = None,          
 ) -> None:
     cert = client_cert.current()
     cert_warn = client_cert.check_and_warn(cert, endpoint=endpoint)
@@ -320,6 +322,7 @@ def _audit(
         duration_ms=int((time.perf_counter() - started) * 1000),
         error_message=err,
         correlation_id=correlation_id,
+        fraud_signals=fraud_signals,
         **fields,
     )
 
@@ -507,6 +510,24 @@ def _resolve_card_to_account(card_number: str) -> str | None:
         return resp.json().get("accountNumber")
     # 404 (card not found) or 403 (cancelled) — treat as unknown card
     return None
+
+
+def _fetch_account_history(account_id: int, jwt: str) -> list[dict]:
+    """Best-effort read of Core Banking history for fraud checks. Returns []
+    on any error so a transient read failure never blocks a legitimate
+    transaction."""
+    try:
+        resp = cb_http.get(
+            f"{CORE_BANKING_URL}/accounts/{account_id}/transactions",
+            headers={"Authorization": f"Bearer {jwt}"},
+            timeout=(3, 8),
+        )
+        if resp.ok:
+            data = resp.json()
+            return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
 
 
 # ── Request models ────────────────────────────────────────────────────────────
@@ -768,6 +789,14 @@ def atm_login(
             except Exception as e:
                 print(f"[Lockouts] record_failure failed for account {account_number}: {e}")
                 raise HTTPException(500, f"Lockout state error: {e}") from e
+            
+            # ── FRAUD: track failed login per terminal (cross-card brute-force) ──
+            fraud_detection.record_login_failure(
+                cert_serial=(client_cert.current().normalized_serial
+                             if client_cert.current() else None),
+                account_number=account_number,
+            )
+
         else:
             result = {"status": "invalid", "attempts_to_next_lock": 3}
         correlation.log_step(
@@ -821,8 +850,43 @@ def atm_login(
         account_number=account_number, endpoint="/atm/login",
     )
 
+
     # Clear lockout counter keyed by accountNumber.
     lockouts.reset(account_number)
+
+
+    # ── FRAUD: evaluate login before issuing a session ───────────────────────
+    login_assessment = fraud_detection.assess_login(
+        account_number=account_number,
+        cert_serial=(client_cert.current().normalized_serial
+                     if client_cert.current() else None),
+    )
+    fraud_detection.record_assessment(
+        account_number=account_number, endpoint="/atm/login",
+        assessment=login_assessment, correlation_id=corr,
+    )
+    if login_assessment.signals:
+        correlation.log_step(
+            corr, "fraud_evaluation", "middleware",
+            "error" if login_assessment.blocked else "ok",
+            account_number=account_number, endpoint="/atm/login",
+            detail={"signals": login_assessment.as_list()},
+        )
+    if login_assessment.blocked:
+        body = {
+            "status": "locked",
+            "message": login_assessment.block_reason,
+            "remaining_lock_seconds": 0,
+            "lock_minutes": 0,
+        }
+        _audit(
+            endpoint="/atm/login", http_method="POST", outcome="error",
+            status_code=403, started=started, account_number=account_number,
+            channel=channel, request_body=req_audit, response_body=body,
+            correlation_id=corr, fraud_signals=login_assessment.as_list(),
+        )
+        return body
+
 
     session_token = sessions.create(
         jwt=data["token"],
@@ -1229,7 +1293,13 @@ def atm_deposit(
             account_number=account_number, endpoint="/atm/deposit",
             detail={"amount": req.amount},
         )
-        resp = _cb_post(f"/accounts/{account_id}/deposit", {"amountDeposit": req.amount}, jwt)
+        cb_idem_key = f"{account_number}:{idempotency_key}"
+        resp = _cb_post(
+            f"/accounts/{account_id}/deposit",
+            {"amountDeposit": req.amount},
+            jwt,
+            extra_headers={"X-Idempotency-Key": cb_idem_key},
+        )
         if not resp.ok:
             correlation.log_step(
                 corr, "core_banking_response", "core_banking", "error",
@@ -1340,17 +1410,53 @@ def atm_withdraw(
         account_number=account_number, endpoint="/atm/withdraw",
     )
 
+    # ── Fraud / compliance evaluation (runs before the debit) ─────────────
+    history = _fetch_account_history(account_id, jwt)
+    assessment = fraud_detection.assess_transaction(
+        account_number=account_number,
+        transaction_type="WITHDRAW",
+        amount=req.amount,
+        history=history,
+    )
+    fraud_detection.record_assessment(
+        account_number=account_number,
+        endpoint="/atm/withdraw",
+        assessment=assessment,
+        correlation_id=corr,
+    )
+    if assessment.signals:
+        correlation.log_step(
+            corr, "fraud_evaluation", "middleware",
+            "error" if assessment.blocked else "ok",
+            account_number=account_number, endpoint="/atm/withdraw",
+            detail={"signals": assessment.as_list(), "new_account": assessment.new_account},
+        )
+    if assessment.blocked:
+        _audit(
+            endpoint="/atm/withdraw", http_method="POST", outcome="error",
+            status_code=403, started=started, account_number=account_number,
+            channel=channel, idempotency_key=idempotency_key,
+            request_body=req.model_dump(),
+            response_body={"detail": assessment.block_reason},
+            correlation_id=corr, fraud_signals=assessment.as_list(),
+        )
+        raise HTTPException(403, assessment.block_reason)
+
     try:
         correlation.log_step(
             corr, "core_banking_request", "core_banking", "ok",
             account_number=account_number, endpoint="/atm/withdraw",
             detail={"amount": req.amount},
         )
+        cb_idem_key = f"{account_number}:{idempotency_key}"
         resp = _cb_post(
             f"/accounts/{account_id}/withdraw",
             {"amountWithdraw": req.amount},
             jwt,
-            extra_headers={"X-Dispense-Ack-Timeout-Seconds": str(ACK_TIMEOUT_SECONDS)},
+            extra_headers={
+                "X-Dispense-Ack-Timeout-Seconds": str(ACK_TIMEOUT_SECONDS),
+                "X-Idempotency-Key": cb_idem_key,
+            },
         )
         if resp.status_code == 400:
             correlation.log_step(

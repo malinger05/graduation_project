@@ -1,0 +1,4 @@
+# Load-testing dependencies (separate from the app's requirements.txt).
+#   pip install -r loadtest/requirements.txt
+locust>=2.30
+requests>=2.31

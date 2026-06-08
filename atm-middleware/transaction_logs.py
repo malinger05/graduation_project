@@ -62,6 +62,7 @@ def log_event(
     correlation_id: str | None = None,
     client_cert_subject: str | None = None,
     client_cert_serial: str | None = None,
+    fraud_signals: Any = None,
 ) -> None:
     """
     Append one audit row. outcome is one of: success, error, cached.
@@ -90,4 +91,5 @@ def log_event(
             error_message        = error_message,
             client_cert_subject  = client_cert_subject,
             client_cert_serial   = client_cert_serial,
+            fraud_signals = sanitize(fraud_signals) if fraud_signals is not None else None,
         ))

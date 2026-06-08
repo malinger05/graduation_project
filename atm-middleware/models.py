@@ -141,6 +141,8 @@ class TransactionLog(Base):
     client_cert_subject  = Column(String, nullable=True)
     client_cert_serial   = Column(String, nullable=True, index=True)
 
+    fraud_signals = Column(JSONB, nullable=True)
+
 
 class CorrelationLog(Base):
     """
@@ -164,3 +166,29 @@ class CorrelationLog(Base):
     account_number = Column(String, nullable=True)
     endpoint       = Column(String, nullable=True)
     created_at     = Column(DateTime(timezone=True), nullable=False)
+
+
+class FraudEvent(Base):
+    """
+    Fraud / compliance signals raised by the middleware for one request.
+
+    One row per request that produced at least one signal (blocked or not).
+    Read by analysts / the admin panel; never used to compute banking state.
+    """
+
+    __tablename__ = "fraud_events"
+
+    event_id       = Column(String, primary_key=True)
+    correlation_id = Column(String, nullable=True, index=True)
+    created_at     = Column(DateTime(timezone=True), nullable=False)
+
+    account_number = Column(String, nullable=True, index=True)
+    endpoint       = Column(String, nullable=False)
+
+    # block | review | info  (highest severity among the signals)
+    severity       = Column(String, nullable=False)
+    blocked        = Column(Boolean, nullable=False, default=False)
+    new_account    = Column(Boolean, nullable=False, default=False)
+
+    # Full list of signal dicts: [{code, severity, message, detail}, ...]
+    signals        = Column(JSONB, nullable=False)
