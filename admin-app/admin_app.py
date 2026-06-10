@@ -79,12 +79,28 @@ def _core_call(method: str, path: str, headers: dict, timeout=(3, 15), **kwargs)
     return getattr(_HTTP, method)(url, headers=merged_headers, **extra, **kwargs)
 
 
+def _cb_error_detail(resp):
+    """Turn a Core Banking error response into a short admin-facing message."""
+    # requests.Response is falsy for 4xx/5xx — only None means unreachable.
+    if resp is None:
+        return "Core Banking unreachable"
+    try:
+        body = resp.json()
+        if isinstance(body, dict) and body.get("message"):
+            return str(body["message"])
+    except ValueError:
+        pass
+    text = (resp.text or "").strip()
+    return text[:200] if text else f"Core Banking error (HTTP {resp.status_code})"
+
+
 def _cb(method, path, **kwargs):
     """Call Core Banking with JWT auth."""
     try:
         resp = _core_call(method, path, headers=_jwt_headers(), timeout=(3, 15), **kwargs)
         return resp
-    except (_req.exceptions.RequestException, RuntimeError):
+    except (_req.exceptions.RequestException, RuntimeError) as exc:
+        app.logger.warning("Core Banking %s %s failed: %s", method.upper(), path, exc)
         return None
 
 
@@ -125,7 +141,7 @@ def login_required(view):
 
 def _fetch_all_transactions(limit: int = 500) -> list:
     resp = _cb_service("get", "/admin/transactions", params={"limit": limit})
-    if not resp or not resp.ok:
+    if resp is None or not resp.ok:
         return []
     return resp.json()
 
@@ -282,9 +298,8 @@ def register_customer():
         "dateOfBirth": f.get("dateOfBirth", "").strip(),
     }
     resp1 = _cb("post", "/customers", json=customer_payload)
-    if not resp1 or not resp1.ok:
-        detail = resp1.text[:200] if resp1 else "Core Banking unreachable"
-        flash(f"Customer creation failed: {detail}")
+    if resp1 is None or not resp1.ok:
+        flash(f"Customer creation failed: {_cb_error_detail(resp1)}")
         return render_template("register.html", form=f)
  
     customer = resp1.json()
@@ -298,9 +313,11 @@ def register_customer():
  
     resp2 = _cb("post", f"/customers/{customer_id}/accounts",
                 json={"initialBalance": initial_balance})
-    if not resp2 or not resp2.ok:
-        detail = resp2.text[:200] if resp2 else "Core Banking unreachable"
-        flash(f"Account creation failed: {detail} — customer created (id={customer_id})")
+    if resp2 is None or not resp2.ok:
+        flash(
+            f"Account creation failed: {_cb_error_detail(resp2)} "
+            f"— customer created (id={customer_id})"
+        )
         return render_template("register.html", form=f)
  
     account = resp2.json()
@@ -337,7 +354,7 @@ def register_account(customer_id):
     except ValueError:
         initial_balance = 0.0
     resp = _cb("post", f"/customers/{customer_id}/accounts", json={"initialBalance": initial_balance})
-    if not resp or not resp.ok:
+    if resp is None or not resp.ok:
         flash("Failed to register account. Please try again.", "error")
         return redirect(url_for("customers"))
     account = resp.json()
@@ -448,7 +465,7 @@ def api_blockchain():
 def customer_accounts(customer_id):
     """Returns accounts for a customer as JSON — called by the modal JS."""
     resp = _cb("get", f"/customers/{customer_id}/accounts")
-    if not resp or not resp.ok:
+    if resp is None or not resp.ok:
         return jsonify([])
     return jsonify(resp.json())
 
@@ -469,7 +486,7 @@ def account_lockout_status(account_number):
     the card-resolution step and checks the lockout table directly.
     """
     resp = _mw("post", "/atm/account-status", json={"accountNumber": account_number})
-    if not resp or not resp.ok:
+    if resp is None or not resp.ok:
         return jsonify({"status": "unknown", "error": "Middleware unreachable"}), 503
     return jsonify(resp.json())
 
@@ -547,8 +564,8 @@ def admin_unlock_account(account_number):
     The middleware sets must_reset_pin=True; the customer sets a new PIN at the ATM.
     """
     resp = _mw("post", "/atm/admin/login-unlock", json={"accountNumber": account_number})
-    if not resp or not resp.ok:
-        detail = resp.text[:200] if resp else "Middleware unreachable"
+    if resp is None or not resp.ok:
+        detail = _cb_error_detail(resp) if resp is not None else "Middleware unreachable"
         return jsonify({"status": "error", "message": detail}), 502
     return jsonify({"status": "ok", "message": "Account unlocked. Customer must set a new PIN at the ATM."}), 200
 
@@ -560,7 +577,7 @@ def admin_unlock_account(account_number):
 def account_cards(account_id):
     """Returns cards for an account as JSON."""
     resp = _cb("get", f"/accounts/{account_id}/cards")
-    if not resp or not resp.ok:
+    if resp is None or not resp.ok:
         return jsonify([])
     return jsonify(resp.json())
 
@@ -572,8 +589,8 @@ def issue_card(account_id):
     data = request.get_json(silent=True) or {}
     resp = _cb("post", f"/accounts/{account_id}/cards",
                json={"holderName": data.get("holderName", "")})
-    if not resp or not resp.ok:
-        detail = resp.text[:200] if resp else "Core Banking unreachable"
+    if resp is None or not resp.ok:
+        detail = _cb_error_detail(resp)
         return jsonify({"status": "error", "message": detail}), 502
     return jsonify(resp.json()), 201
 
@@ -593,8 +610,8 @@ def update_card_status(card_id):
         return jsonify({"status": "error", "message": "accountId required"}), 400
     resp = _cb("patch", f"/accounts/{account_id}/cards/{card_id}/status",
                json={"cardStatus": card_status})
-    if not resp or not resp.ok:
-        detail = resp.text[:200] if resp else "Core Banking unreachable"
+    if resp is None or not resp.ok:
+        detail = _cb_error_detail(resp)
         return jsonify({"status": "error", "message": detail}), 502
     return jsonify(resp.json())
 
@@ -603,8 +620,8 @@ def update_card_status(card_id):
 def send_card_email(account_id, card_id):
     """Resend card details + setup instructions email for a specific card."""
     resp = _cb("post", f"/accounts/{account_id}/cards/{card_id}/send-email")
-    if not resp or not resp.ok:
-        detail = resp.text[:200] if resp else "Core Banking unreachable"
+    if resp is None or not resp.ok:
+        detail = _cb_error_detail(resp)
         return jsonify({"status": "error", "message": detail}), 502
     return jsonify({"status": "ok", "message": "Email sent."}), 200
 
