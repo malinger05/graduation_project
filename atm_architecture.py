@@ -131,9 +131,12 @@ class MiddlewareClient:
                 "status": "locked",
                 "remaining_lock_seconds": data.get("remaining_lock_seconds", 300),
                 "lock_minutes": data.get("lock_minutes"),
+                "message": data.get("message"),
             }
             if data.get("admin_unlock_required"):
                 out["admin_unlock_required"] = True
+            if data.get("terminal_lock"):
+                out["terminal_lock"] = True
             return out
 
         if status != "ok":

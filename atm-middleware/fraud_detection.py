@@ -365,9 +365,66 @@ def _check_night_pattern(a: Assessment, txns: list[_Txn], ts: datetime) -> None:
 
 # ── Login-time assessment ───────────────────────────────────────────────────-
 
-_LOGIN_FAIL_WINDOW = timedelta(minutes=15)
 _login_fails: dict[str, list[tuple[float, str]]] = {}  # source -> [(ts, account)]
 _login_lock = threading.Lock()
+
+
+def _login_fail_window_seconds() -> float:
+    minutes = max(1, config.FRAUD_LOGIN_FAIL_WINDOW_MINUTES)
+    return minutes * 60.0
+
+
+def _cert_key(cert_serial: Optional[str]) -> str:
+    return (cert_serial or "unknown").strip() or "unknown"
+
+
+def _prune_bucket(key: str, now: float) -> list[tuple[float, str]]:
+    cutoff = now - _login_fail_window_seconds()
+    with _login_lock:
+        bucket = [(t, acc) for (t, acc) in _login_fails.get(key, []) if t >= cutoff]
+        _login_fails[key] = bucket
+        return list(bucket)
+
+
+def terminal_lock_status(cert_serial: Optional[str]) -> dict | None:
+    """
+    Return terminal-wide login lock info when this kiosk exceeded the failed-login
+    threshold inside the rolling window. None when logins are allowed.
+    """
+    if not config.FRAUD_DETECTION_ENABLED:
+        return None
+
+    key = _cert_key(cert_serial)
+    now = time.time()
+    bucket = _prune_bucket(key, now)
+    distinct_accounts = {acc for _, acc in bucket}
+    total = len(bucket)
+    max_fails = config.FRAUD_LOGIN_MAX_FAILS_PER_SOURCE_15M
+    max_accounts = config.FRAUD_LOGIN_MAX_ACCOUNTS_PER_SOURCE_15M
+    over_fail_limit = max_fails > 0 and total >= max_fails
+    over_account_limit = max_accounts > 0 and len(distinct_accounts) >= max_accounts
+    if not over_fail_limit and not over_account_limit:
+        return None
+
+    oldest = min(t for t, _ in bucket)
+    remaining = max(1, int(oldest + _login_fail_window_seconds() - now))
+    window_min = config.FRAUD_LOGIN_FAIL_WINDOW_MINUTES
+    if over_account_limit:
+        message = (
+            f"Too many accounts were tried on this ATM in the last {window_min} minutes. "
+            f"Please wait before trying again."
+        )
+    else:
+        message = (
+            f"Too many incorrect PIN attempts on this ATM in the last {window_min} minutes. "
+            f"Please wait before trying again."
+        )
+    return {
+        "remaining_lock_seconds": remaining,
+        "lock_minutes": max(1, (remaining + 59) // 60),
+        "message": message,
+        "terminal_lock": True,
+    }
 
 
 def record_login_failure(*, cert_serial: Optional[str], account_number: str) -> None:
@@ -380,13 +437,11 @@ def record_login_failure(*, cert_serial: Optional[str], account_number: str) -> 
     In-memory by design (the middleware runs as a single process here). For a
     multi-worker deployment back this with Redis.
     """
-    key = (cert_serial or "unknown").strip() or "unknown"
+    key = _cert_key(cert_serial)
     now = time.time()
-    cutoff = now - _LOGIN_FAIL_WINDOW.total_seconds()
     with _login_lock:
-        bucket = [
-            (t, acc) for (t, acc) in _login_fails.get(key, []) if t >= cutoff
-        ]
+        cutoff = now - _login_fail_window_seconds()
+        bucket = [(t, acc) for (t, acc) in _login_fails.get(key, []) if t >= cutoff]
         bucket.append((now, account_number))
         _login_fails[key] = bucket
 
@@ -406,28 +461,20 @@ def assess_login(
 
 
 def _check_cross_card_bruteforce(a: Assessment, cert_serial: Optional[str]) -> None:
-    key = (cert_serial or "unknown").strip() or "unknown"
-    now = time.time()
-    cutoff = now - _LOGIN_FAIL_WINDOW.total_seconds()
-    with _login_lock:
-        bucket = [
-            (t, acc) for (t, acc) in _login_fails.get(key, []) if t >= cutoff
-        ]
-        _login_fails[key] = bucket
+    terminal = terminal_lock_status(cert_serial)
+    if terminal is None:
+        return
+    key = _cert_key(cert_serial)
+    bucket = _prune_bucket(key, time.time())
     distinct_accounts = {acc for _, acc in bucket}
-    total = len(bucket)
-    max_fails = config.FRAUD_LOGIN_MAX_FAILS_PER_SOURCE_15M
-    max_accounts = config.FRAUD_LOGIN_MAX_ACCOUNTS_PER_SOURCE_15M
-    if (max_fails > 0 and total >= max_fails) or (
-        max_accounts > 0 and len(distinct_accounts) >= max_accounts
-    ):
-        a.add(
-            "cross_card_bruteforce", SEV_BLOCK,
-            "Too many failed logins from this terminal across multiple cards.",
-            failures_15m=total,
-            distinct_accounts=len(distinct_accounts),
-            cert_serial=key,
-        )
+    a.add(
+        "cross_card_bruteforce", SEV_BLOCK,
+        terminal["message"],
+        failures_in_window=len(bucket),
+        distinct_accounts=len(distinct_accounts),
+        cert_serial=key,
+        remaining_lock_seconds=terminal["remaining_lock_seconds"],
+    )
 
 
 # ── EMV 3-D Secure / Card-Not-Present pattern — Concurrent session detection ──────────────────────────────────

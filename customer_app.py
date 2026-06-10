@@ -350,10 +350,12 @@ def check_card():
             }), 403
         remaining = int(result.get("remaining_lock_seconds", 300))
         mins, secs = divmod(remaining, 60)
+        default_msg = f"Card locked. Try again in {mins:02d}:{secs:02d}."
         return jsonify({
             "status":                 "locked",
             "remaining_lock_seconds": remaining,
-            "message":                f"Card locked. Try again in {mins:02d}:{secs:02d}.",
+            "terminal_lock":          bool(result.get("terminal_lock")),
+            "message":                result.get("message") or default_msg,
         }), 403
 
     return jsonify({"status": "ok", "card_number": card_number})
@@ -394,10 +396,12 @@ def login():
             }), 403
         remaining = int(auth_result.get("remaining_lock_seconds", 300))
         mins, secs = divmod(remaining, 60)
+        default_msg = f"Card locked. Try again in {mins:02d}:{secs:02d}."
         return jsonify({
             "status":                 "locked",
             "remaining_lock_seconds": remaining,
-            "message":                f"Card locked. Try again in {mins:02d}:{secs:02d}.",
+            "terminal_lock":          bool(auth_result.get("terminal_lock")),
+            "message":                auth_result.get("message") or default_msg,
         }), 403
 
     if auth_status != "ok":

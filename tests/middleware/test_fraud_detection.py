@@ -397,16 +397,36 @@ def test_login_failures_separate_per_terminal(monkeypatch):
 
 
 def test_login_window_expiry(monkeypatch):
-    """Failures older than 15 minutes are pruned."""
+    """Failures older than the login-fail window are pruned."""
+    monkeypatch.setattr(config, "FRAUD_LOGIN_FAIL_WINDOW_MINUTES", 5, raising=False)
     monkeypatch.setattr(config, "FRAUD_LOGIN_MAX_ACCOUNTS_PER_SOURCE_15M", 3, raising=False)
     monkeypatch.setattr(config, "FRAUD_LOGIN_MAX_FAILS_PER_SOURCE_15M", 100, raising=False)
     clock = {"t": 1_000_000.0}
     monkeypatch.setattr(fd, "time", SimpleNamespace(time=lambda: clock["t"]))
+    fd._login_fails.clear()
     for i in range(3):
         fd.record_login_failure(cert_serial="KIOSK-A", account_number=f"DE-{i}")
-    clock["t"] += 16 * 60  # advance past the 15-minute window
+    clock["t"] += 6 * 60  # advance past the 5-minute window
     a = fd.assess_login(account_number="DE-X", cert_serial="KIOSK-A")
     assert a.blocked is False
+
+
+def test_terminal_lock_status_remaining_seconds(monkeypatch):
+    monkeypatch.setattr(config, "FRAUD_LOGIN_FAIL_WINDOW_MINUTES", 5, raising=False)
+    monkeypatch.setattr(config, "FRAUD_LOGIN_MAX_FAILS_PER_SOURCE_15M", 15, raising=False)
+    monkeypatch.setattr(config, "FRAUD_LOGIN_MAX_ACCOUNTS_PER_SOURCE_15M", 100, raising=False)
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(fd, "time", SimpleNamespace(time=lambda: clock["t"]))
+    fd._login_fails.clear()
+    for _ in range(15):
+        fd.record_login_failure(cert_serial="KIOSK-T", account_number="ACC-1")
+    terminal = fd.terminal_lock_status("KIOSK-T")
+    assert terminal is not None
+    assert terminal["terminal_lock"] is True
+    assert terminal["remaining_lock_seconds"] == 300
+    clock["t"] += 120
+    terminal = fd.terminal_lock_status("KIOSK-T")
+    assert terminal["remaining_lock_seconds"] == 180
 
 
 # ── Login: concurrent session (DB-backed, monkeypatched) ───────────────────────

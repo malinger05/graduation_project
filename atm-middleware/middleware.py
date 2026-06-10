@@ -312,6 +312,21 @@ def _audit(
     )
 
 
+def _current_cert_serial() -> str | None:
+    cert = client_cert.current()
+    return cert.normalized_serial if cert else None
+
+
+def _fraud_terminal_lock_body(terminal: dict) -> dict:
+    return {
+        "status":                 "locked",
+        "terminal_lock":          True,
+        "message":                terminal["message"],
+        "remaining_lock_seconds": terminal["remaining_lock_seconds"],
+        "lock_minutes":           terminal["lock_minutes"],
+    }
+
+
 # ── Blockchain ────────────────────────────────────────────────────────────────
 
 _blockchain      = None
@@ -641,6 +656,17 @@ def atm_account_status(
     else:
         raise HTTPException(400, "Provide either cardNumber or accountNumber.")
 
+    terminal = fraud_detection.terminal_lock_status(_current_cert_serial())
+    if terminal:
+        body = _fraud_terminal_lock_body(terminal)
+        _audit(
+            endpoint="/atm/account-status", http_method="POST", outcome="success",
+            status_code=200, started=started, account_number=account_number,
+            channel=channel, request_body=req_audit, response_body=body,
+            correlation_id=corr,
+        )
+        return body
+
     lockout = lockouts.check(account_number)
 
     # BUG FIX: The old code built {"status": "locked", **lockout} when lockout
@@ -677,6 +703,23 @@ def atm_login(
 
     # ── Step 1: resolve card number → account number ──────────────────────────
     account_number = _resolve_card_to_account(req.cardNumber)
+
+    cert_serial = _current_cert_serial()
+    terminal = fraud_detection.terminal_lock_status(cert_serial)
+    if terminal:
+        body = _fraud_terminal_lock_body(terminal)
+        correlation.log_step(
+            corr, "fraud_terminal_lock", "middleware", "skipped",
+            account_number=account_number, endpoint="/atm/login",
+            message=terminal["message"],
+        )
+        _audit(
+            endpoint="/atm/login", http_method="POST", outcome="success",
+            status_code=200, started=started, account_number=account_number,
+            channel=channel, request_body=req_audit, response_body=body,
+            correlation_id=corr,
+        )
+        return body
 
     # ── Step 2: lockout check (keyed by accountNumber) ────────────────────────
     if account_number is not None:
@@ -717,13 +760,21 @@ def atm_login(
             
             # ── FRAUD: track failed login per terminal (cross-card brute-force) ──
             fraud_detection.record_login_failure(
-                cert_serial=(client_cert.current().normalized_serial
-                             if client_cert.current() else None),
+                cert_serial=cert_serial,
                 account_number=account_number,
             )
-
+            terminal = fraud_detection.terminal_lock_status(cert_serial)
+            if terminal:
+                result = _fraud_terminal_lock_body(terminal)
         else:
             result = {"status": "invalid", "attempts_to_next_lock": 3}
+            fraud_detection.record_login_failure(
+                cert_serial=cert_serial,
+                account_number=req.cardNumber,
+            )
+            terminal = fraud_detection.terminal_lock_status(cert_serial)
+            if terminal:
+                result = _fraud_terminal_lock_body(terminal)
         correlation.log_step(
             corr, "core_banking_response", "core_banking", "error",
             account_number=account_number, endpoint="/atm/login",
@@ -783,8 +834,7 @@ def atm_login(
     # ── FRAUD: evaluate login before issuing a session ───────────────────────
     login_assessment = fraud_detection.assess_login(
         account_number=account_number,
-        cert_serial=(client_cert.current().normalized_serial
-                     if client_cert.current() else None),
+        cert_serial=cert_serial,
     )
     fraud_detection.record_assessment(
         account_number=account_number, endpoint="/atm/login",
@@ -798,12 +848,16 @@ def atm_login(
             detail={"signals": login_assessment.as_list()},
         )
     if login_assessment.blocked:
-        body = {
-            "status": "locked",
-            "message": login_assessment.block_reason,
-            "remaining_lock_seconds": 0,
-            "lock_minutes": 0,
-        }
+        terminal = fraud_detection.terminal_lock_status(cert_serial)
+        if terminal:
+            body = _fraud_terminal_lock_body(terminal)
+        else:
+            body = {
+                "status": "locked",
+                "message": login_assessment.block_reason,
+                "remaining_lock_seconds": 0,
+                "lock_minutes": 0,
+            }
         _audit(
             endpoint="/atm/login", http_method="POST", outcome="error",
             status_code=403, started=started, account_number=account_number,

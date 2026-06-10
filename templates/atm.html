@@ -2983,7 +2983,7 @@
                   var match=msg.match(/(\d+):(\d+)/);
                   secs=match?(parseInt(match[1])*60+parseInt(match[2])):300;
                 }
-                showLocked(secs);
+                showLocked(secs, lockedScreenOpts(d));
               }
             } else {
               err.textContent=d.message||'Invalid credentials.';
@@ -3049,7 +3049,7 @@
                 var match=msg.match(/(\d+):(\d+)/);
                 secs=match?(parseInt(match[1])*60+parseInt(match[2])):300;
               }
-              showLocked(secs);
+              showLocked(secs, lockedScreenOpts(d));
             }
             return;
           }
@@ -3191,19 +3191,35 @@
           goTo('idle');
         },15000);
       }
-      function showLocked(totalSeconds){
-        document.querySelector('#page-locked .locked-title').textContent='Account Locked';
-        document.querySelector('#page-locked .locked-sub').innerHTML=
-          'Too many incorrect PIN attempts.<br>Please wait before trying again.';
-        document.querySelector('#page-locked .locked-hint').textContent=
-          'This screen cannot be dismissed. Please wait for the timer.';
+      function lockedScreenOpts(d){
+        if(d && d.terminal_lock){
+          return {
+            title:'ATM Temporarily Locked',
+            sub:(d.message||'Too many incorrect PIN attempts on this ATM.<br>Please wait before trying again.').replace(/\n/g,'<br>'),
+            hint:'Logins are paused on this terminal until the timer reaches zero.'
+          };
+        }
+        if(d && d.message){
+          return {sub:d.message.replace(/\n/g,'<br>')};
+        }
+        return {};
+      }
+
+      function showLocked(totalSeconds, opts){
+        opts=opts||{};
+        var title=opts.title||'Account Locked';
+        var sub=opts.sub||'Too many incorrect PIN attempts.<br>Please wait before trying again.';
+        var hint=opts.hint||'This screen cannot be dismissed. Please wait for the timer.';
+        document.querySelector('#page-locked .locked-title').textContent=title;
+        document.querySelector('#page-locked .locked-sub').innerHTML=sub;
+        document.querySelector('#page-locked .locked-hint').textContent=hint;
         // Show the locked page
         document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
         document.getElementById('page-locked').classList.add('active');
         document.getElementById('header-nav').classList.remove('visible');
 
-        var remaining=totalSeconds;
-        var total=totalSeconds;
+        var remaining=Math.max(1,parseInt(totalSeconds,10)||1);
+        var total=remaining;
         var circumference=427;
 
         function render(){
