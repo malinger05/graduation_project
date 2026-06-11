@@ -1020,7 +1020,7 @@ def atm_reset_pin(
 
     resp = _cb_post_service(
         "/atm/reset-pin",
-        {"cardNumber": req.cardNumber, "pin": req.newPin},
+        {"cardNumber": card_number, "pin": req.newPin},
     )
     if not resp.ok:
         try:

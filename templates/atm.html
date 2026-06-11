@@ -3023,6 +3023,7 @@
               err.classList.add('show');
               document.getElementById('login-input').value='';
             } else if(d.status==='pin_reset_required'){
+              rememberPinResetEntry(S.loginAccount);
               showPinResetRequired(d.accountNumber||d.account||S.loginAccount);
             } else if(d.status==='locked'){
               if(d.admin_unlock_required){
@@ -3088,6 +3089,7 @@
         .then(r=>r.json().then(d=>({ok:r.ok,d})))
         .then(({ok,d})=>{
           if(d.status==='pin_reset_required'){
+            rememberPinResetEntry(account);
             showPinResetRequired(d.accountNumber||d.account||account);
             return;
           }
@@ -3121,6 +3123,12 @@
         S.pendingResetAccount=account;
         document.getElementById('pin-reset-notice-account').textContent='Account '+account;
         goTo('pin-reset-required');
+      }
+
+      function rememberPinResetEntry(raw){
+        var digits=(raw||'').replace(/\s/g,'');
+        S.pendingResetCard=/^\d{16}$/.test(digits)?digits:null;
+        S.pendingResetAccount=raw||'';
       }
 
       var _prFpPollTimer=null;
@@ -3183,11 +3191,13 @@
       }
 
       function continuePinResetFromNotice(){
-        var account=S.pendingResetAccount||'';
         fetch('/pin-reset/prepare',{
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({accountNumber:account})
+          body:JSON.stringify({
+            accountNumber:S.pendingResetAccount||'',
+            cardNumber:S.pendingResetCard||''
+          })
         })
         .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
         .then(function(res){
@@ -3196,6 +3206,7 @@
             return;
           }
           if(res.d.accountNumber){S.pendingResetAccount=res.d.accountNumber;}
+          if(S.pendingResetCard){/* keep card from login entry */}
           document.getElementById('pr-fp-error').classList.remove('show');
           document.getElementById('pr-fp-retry-btn').style.display='none';
           goTo('pin-reset-fingerprint');

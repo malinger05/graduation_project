@@ -542,16 +542,21 @@ def pin_reset_prepare():
     for fingerprint verification before new PIN entry.
     """
     data = request.get_json(silent=True) or {}
-    account_ref = (data.get("accountNumber") or data.get("account") or data.get("cardNumber") or "").strip()
-    if not account_ref:
-        return jsonify({"error": "accountNumber is required"}), 400
+    card_from_req = (data.get("cardNumber") or "").strip().replace(" ", "")
+    account_ref = (data.get("accountNumber") or data.get("account") or "").strip()
 
-    card_digits = account_ref.replace(" ", "")
-    status_payload = (
-        {"cardNumber": card_digits}
-        if re.match(r"^\d{16}$", card_digits)
-        else {"accountNumber": account_ref.upper()}
-    )
+    if card_from_req and re.match(r"^\d{16}$", card_from_req):
+        status_payload = {"cardNumber": card_from_req}
+        card_digits = card_from_req
+    elif account_ref:
+        card_digits = account_ref.replace(" ", "")
+        status_payload = (
+            {"cardNumber": card_digits}
+            if re.match(r"^\d{16}$", card_digits)
+            else {"accountNumber": account_ref.upper()}
+        )
+    else:
+        return jsonify({"error": "accountNumber or cardNumber is required"}), 400
 
     try:
         resp = mw_http.post(
@@ -580,8 +585,11 @@ def pin_reset_prepare():
             "status": "fingerprint_not_registered",
         }), 403
 
+    stored_card = card_digits if re.match(r"^\d{16}$", card_digits) else None
+
     _save_pending_pin_reset({
         "accountNumber": account_number,
+        "cardNumber": stored_card,
         "fingerprintSlotId": int(slot_id),
         "fingerprintOk": False,
     })
@@ -979,15 +987,14 @@ def reset_pin():
         }), 403
 
     account_number = pending.get("accountNumber")
+    card_number = pending.get("cardNumber") or card_number
     if not account_number and not card_number and not account_ref:
         return jsonify({"status": "error", "message": "Session expired. Start PIN reset again."}), 400
 
-    if not account_number:
-        card_digits = (card_number or account_ref).replace(" ", "")
+    if not card_number:
+        card_digits = (account_ref or "").replace(" ", "")
         if re.match(r"^\d{16}$", card_digits):
             card_number = card_digits
-        else:
-            account_number = account_ref or card_number
 
     try:
         repo = AccountsRepository(MIDDLEWARE_URL)
@@ -995,7 +1002,7 @@ def reset_pin():
             new_pin,
             confirm_pin,
             card_number=card_number or None,
-            account_number=account_number,
+            account_number=account_number if not card_number else None,
         )
     except RuntimeError as e:
         return jsonify({"status": "error", "message": str(e)}), 503
