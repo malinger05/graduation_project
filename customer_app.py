@@ -268,6 +268,35 @@ def _finalize_pending_login() -> dict:
     }
 
 
+def _get_pending_pin_reset() -> dict | None:
+    return session.get("pending_pin_reset")
+
+
+def _save_pending_pin_reset(pending: dict) -> None:
+    session["pending_pin_reset"] = pending
+    session.modified = True
+
+
+def _require_pending_pin_reset() -> dict | tuple:
+    pending = _get_pending_pin_reset()
+    if not pending or not pending.get("accountNumber"):
+        return (jsonify({"error": "PIN reset session expired. Start again."}), 400)
+    return pending
+
+
+def _clear_pending_pin_reset() -> None:
+    session.pop("pending_pin_reset", None)
+    cancel_fingerprint()
+
+
+def _sync_pin_reset_fingerprint() -> None:
+    pending = _get_pending_pin_reset()
+    if not pending:
+        return
+    updated = apply_result_to_pending(pending)
+    _save_pending_pin_reset(updated)
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -336,9 +365,12 @@ def check_card():
     status = result.get("status", "ok")
     if status == "pin_reset_required":
         return jsonify({
-            "status":      "pin_reset_required",
-            "card_number": card_number,
-            "message":     "Your card was unlocked by the bank. You must set a new PIN before logging in.",
+            "status":              "pin_reset_required",
+            "card_number":         card_number,
+            "account":             result.get("accountNumber", card_number),
+            "accountNumber":       result.get("accountNumber", card_number),
+            "fingerprintSlotId":   result.get("fingerprintSlotId"),
+            "message":             "Your card was unlocked by the bank. You must set a new PIN before logging in.",
         })
     if status == "locked":
         if result.get("admin_unlock_required"):
@@ -500,6 +532,107 @@ def login_fingerprint_status():
 @app.route("/login/fingerprint/cancel", methods=["POST"])
 def login_fingerprint_cancel():
     _clear_pending_login()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/pin-reset/prepare", methods=["POST"])
+def pin_reset_prepare():
+    """
+    Start PIN reset after admin unlock: verify lockout state and open session
+    for fingerprint verification before new PIN entry.
+    """
+    data = request.get_json(silent=True) or {}
+    account_ref = (data.get("accountNumber") or data.get("account") or data.get("cardNumber") or "").strip()
+    if not account_ref:
+        return jsonify({"error": "accountNumber is required"}), 400
+
+    card_digits = account_ref.replace(" ", "")
+    status_payload = (
+        {"cardNumber": card_digits}
+        if re.match(r"^\d{16}$", card_digits)
+        else {"accountNumber": account_ref.upper()}
+    )
+
+    try:
+        resp = mw_http.post(
+            f"{MIDDLEWARE_URL}/atm/account-status",
+            json=status_payload,
+            timeout=(5, 15),
+        )
+    except Exception:
+        return jsonify({"error": "Cannot reach banking system. Please try again."}), 503
+
+    try:
+        body = resp.json()
+    except Exception:
+        body = {}
+
+    if body.get("status") != "pin_reset_required":
+        return jsonify({
+            "error": "PIN reset is not required for this account. Contact the bank if you need help.",
+        }), 403
+
+    account_number = (body.get("accountNumber") or account_ref).strip()
+    slot_id = body.get("fingerprintSlotId")
+    if slot_id is None:
+        return jsonify({
+            "error": "No fingerprint on file for this account. Complete card setup first.",
+            "status": "fingerprint_not_registered",
+        }), 403
+
+    _save_pending_pin_reset({
+        "accountNumber": account_number,
+        "fingerprintSlotId": int(slot_id),
+        "fingerprintOk": False,
+    })
+
+    return jsonify({
+        "status": "ok",
+        "accountNumber": account_number,
+        "fingerprintSlotId": int(slot_id),
+    }), 200
+
+
+@app.route("/pin-reset/fingerprint/start", methods=["POST"])
+def pin_reset_fingerprint_start():
+    pending = _require_pending_pin_reset()
+    if isinstance(pending, tuple):
+        return pending
+
+    if pending.get("fingerprintOk"):
+        return jsonify({"status": "ok", "mode": "done", "message": "Fingerprint already verified."})
+
+    if is_job_running():
+        return jsonify({"status": "ok", "mode": fingerprint_status().get("mode"), "message": "Already running."})
+
+    ok, mode = start_login_verify(pending["accountNumber"], int(pending["fingerprintSlotId"]))
+    if not ok:
+        return jsonify({"error": mode}), 409
+    return jsonify({"status": "ok", "mode": mode}), 200
+
+
+@app.route("/pin-reset/fingerprint/status", methods=["GET"])
+def pin_reset_fingerprint_status():
+    pending = _require_pending_pin_reset()
+    if isinstance(pending, tuple):
+        return pending
+
+    _sync_pin_reset_fingerprint()
+    status = fingerprint_status()
+    pending = _get_pending_pin_reset() or {}
+
+    return jsonify(
+        {
+            **status,
+            "fingerprintOk": bool(pending.get("fingerprintOk")),
+            "accountNumber": pending.get("accountNumber"),
+        }
+    )
+
+
+@app.route("/pin-reset/fingerprint/cancel", methods=["POST"])
+def pin_reset_fingerprint_cancel():
+    _clear_pending_pin_reset()
     return jsonify({"status": "ok"})
 
 
@@ -837,9 +970,16 @@ def reset_pin():
     if not card_number or not new_pin or not confirm_pin:
         return jsonify({"status": "error", "message": "Enter card number and PIN twice."}), 400
 
+    pending = _get_pending_pin_reset()
+    if not pending or not pending.get("fingerprintOk"):
+        return jsonify({
+            "status":  "error",
+            "message": "Verify your fingerprint before setting a new PIN.",
+        }), 403
+
     try:
         repo   = AccountsRepository(MIDDLEWARE_URL)
-        result = repo.reset_pin(card_number, new_pin, confirm_pin)   # CHANGED
+        result = repo.reset_pin(card_number, new_pin, confirm_pin)
     except RuntimeError as e:
         return jsonify({"status": "error", "message": str(e)}), 503
     except Exception as e:
@@ -851,6 +991,7 @@ def reset_pin():
             "message": result.get("message", "Could not reset PIN."),
         }), 400
 
+    _clear_pending_pin_reset()
     return jsonify({
         "status":  "ok",
         "message": result.get("message", "PIN updated. Please log in with your new PIN."),
@@ -860,6 +1001,7 @@ def reset_pin():
 @app.route("/logout", methods=["POST"])
 def logout():
     _clear_pending_login()
+    _clear_pending_pin_reset()
     key = session.get("atm_key")
     if key:
         _evict_atm_session(key)

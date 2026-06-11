@@ -514,6 +514,24 @@ def _resolve_card_to_account(card_number: str) -> str | None:
     return None
 
 
+def _fetch_account_fingerprint(account_number: str) -> int | None:
+    """Lookup fingerprint slot id from Core Banking (service token)."""
+    if not SERVICE_TOKEN or not account_number:
+        return None
+    try:
+        resp = cb_http.get(
+            f"{CORE_BANKING_URL}/atm/account-fingerprint",
+            params={"accountNumber": account_number},
+            headers={"X-Service-Token": SERVICE_TOKEN},
+            timeout=(3, 8),
+        )
+        if resp.ok:
+            return resp.json().get("fingerprintSlotId")
+    except Exception:
+        pass
+    return None
+
+
 def _fetch_account_history(account_id: int, jwt: str) -> list[dict]:
     """Best-effort read of Core Banking history for fraud checks. Returns []
     on any error so a transient read failure never blocks a legitimate
@@ -674,7 +692,10 @@ def atm_account_status(
     # lockout dict directly (it already has "status") and only add accountNumber
     # on the success path.
     if lockout:
-        body = lockout  # lockout dict already contains "status"
+        body = dict(lockout)
+        if body.get("status") == "pin_reset_required":
+            body["accountNumber"] = account_number
+            body["fingerprintSlotId"] = _fetch_account_fingerprint(account_number)
     else:
         body = {"status": "ok", "accountNumber": account_number}
 

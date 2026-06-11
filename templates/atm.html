@@ -2473,7 +2473,7 @@
               <div class="pin-reset-notice-title">PIN reset required</div>
               <div class="pin-reset-notice-sub">
                 Your identity was confirmed at the branch.<br />
-                You must choose a
+                Verify your fingerprint, then choose a
                 <strong style="color: rgba(255, 255, 255, 0.85)"
                   >new PIN</strong
                 >
@@ -2491,14 +2491,65 @@
                   class="btn btn-yellow btn-full"
                   onclick="continuePinResetFromNotice()"
                 >
-                  Set new PIN now →
+                  Continue →
                 </button>
                 <button class="btn btn-ghost btn-full" onclick="goTo('idle')">
                   Cancel
                 </button>
               </div>
               <div class="pin-reset-notice-hint">
-                Do not enter your old PIN. Continue to create a new one.
+                You will verify your fingerprint first, then create a new PIN.
+              </div>
+            </div>
+          </div>
+
+          <!-- PIN RESET FINGERPRINT (after admin unlock, before new PIN) -->
+          <div class="page" id="page-pin-reset-fingerprint">
+            <div class="pin-reset-notice-inner">
+              <div class="pin-reset-notice-icon">
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 11V7a4 4 0 118 0v4" />
+                  <rect x="5" y="11" width="14" height="10" rx="2" />
+                </svg>
+              </div>
+              <div class="pin-reset-notice-title">Verify fingerprint</div>
+              <div class="login-sub-text" id="pr-fp-sub" style="text-align: center; margin-bottom: 12px">
+                Place the same finger you registered during card setup.
+              </div>
+              <div class="error-box" id="pr-fp-error"></div>
+              <div
+                id="pr-fp-status"
+                class="login-sub-text"
+                style="
+                  margin-top: 8px;
+                  padding: 16px;
+                  border-radius: 10px;
+                  background: rgba(74, 144, 232, 0.08);
+                  border: 1px solid rgba(74, 144, 232, 0.2);
+                  min-height: 48px;
+                  text-align: center;
+                "
+              >
+                Starting sensor…
+              </div>
+              <div class="pin-reset-notice-actions" style="margin-top: 20px">
+                <button
+                  class="btn btn-yellow btn-full"
+                  id="pr-fp-retry-btn"
+                  onclick="startPinResetFingerprint()"
+                  style="display: none"
+                >
+                  Try again
+                </button>
+                <button
+                  class="btn btn-ghost btn-full"
+                  onclick="
+                    cancelPinResetFingerprint();
+                    goTo('idle');
+                  "
+                >
+                  Cancel
+                </button>
               </div>
             </div>
           </div>
@@ -2972,7 +3023,7 @@
               err.classList.add('show');
               document.getElementById('login-input').value='';
             } else if(d.status==='pin_reset_required'){
-              showPinResetRequired(d.account||S.loginAccount);
+              showPinResetRequired(d.accountNumber||d.account||S.loginAccount);
             } else if(d.status==='locked'){
               if(d.admin_unlock_required){
                 showLockedAdmin();
@@ -3037,7 +3088,7 @@
         .then(r=>r.json().then(d=>({ok:r.ok,d})))
         .then(({ok,d})=>{
           if(d.status==='pin_reset_required'){
-            showPinResetRequired(d.account||account);
+            showPinResetRequired(d.accountNumber||d.account||account);
             return;
           }
           if(d.status==='locked'){
@@ -3072,8 +3123,87 @@
         goTo('pin-reset-required');
       }
 
+      var _prFpPollTimer=null;
+
+      function cancelPinResetFingerprint(){
+        if(_prFpPollTimer){clearInterval(_prFpPollTimer);_prFpPollTimer=null;}
+        fetch('/pin-reset/fingerprint/cancel',{method:'POST'}).catch(function(){});
+      }
+
+      function pollPinResetFingerprintStatus(){
+        fetch('/pin-reset/fingerprint/status')
+          .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+          .then(function(res){
+            if(!res.ok)return;
+            var st=res.d;
+            var msg=st.message||'Processing…';
+            if(st.step&&st.total){msg+=' ('+st.step+'/'+st.total+')';}
+            document.getElementById('pr-fp-status').textContent=msg;
+            if(st.done&&st.ok&&st.fingerprintOk){
+              clearInterval(_prFpPollTimer);
+              _prFpPollTimer=null;
+              showPinResetPage(S.pendingResetAccount||st.accountNumber||'');
+              return;
+            }
+            if(st.done&&!st.ok){
+              clearInterval(_prFpPollTimer);
+              _prFpPollTimer=null;
+              var err=document.getElementById('pr-fp-error');
+              err.textContent=st.error||st.message||'Fingerprint verification failed.';
+              err.classList.add('show');
+              document.getElementById('pr-fp-retry-btn').style.display='';
+            }
+          })
+          .catch(function(){});
+      }
+
+      function startPinResetFingerprint(){
+        var err=document.getElementById('pr-fp-error');
+        err.classList.remove('show');
+        document.getElementById('pr-fp-retry-btn').style.display='none';
+        document.getElementById('pr-fp-status').textContent='Starting sensor…';
+        fetch('/pin-reset/fingerprint/start',{method:'POST'})
+          .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+          .then(function(res){
+            if(!res.ok){
+              err.textContent=res.d.error||'Could not start fingerprint verification.';
+              err.classList.add('show');
+              document.getElementById('pr-fp-retry-btn').style.display='';
+              return;
+            }
+            if(_prFpPollTimer)clearInterval(_prFpPollTimer);
+            _prFpPollTimer=setInterval(pollPinResetFingerprintStatus,800);
+            pollPinResetFingerprintStatus();
+          })
+          .catch(function(){
+            err.textContent='Cannot reach server. Please try again.';
+            err.classList.add('show');
+            document.getElementById('pr-fp-retry-btn').style.display='';
+          });
+      }
+
       function continuePinResetFromNotice(){
-        showPinResetPage(S.pendingResetAccount||'');
+        var account=S.pendingResetAccount||'';
+        fetch('/pin-reset/prepare',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({accountNumber:account})
+        })
+        .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+        .then(function(res){
+          if(!res.ok){
+            alert(res.d.error||'Cannot start PIN reset.');
+            return;
+          }
+          if(res.d.accountNumber){S.pendingResetAccount=res.d.accountNumber;}
+          document.getElementById('pr-fp-error').classList.remove('show');
+          document.getElementById('pr-fp-retry-btn').style.display='none';
+          goTo('pin-reset-fingerprint');
+          startPinResetFingerprint();
+        })
+        .catch(function(){
+          alert('Cannot reach server. Please try again.');
+        });
       }
 
       // ── PIN reset (only after admin unlock — triggered by account-status check) ──
@@ -3149,6 +3279,7 @@
       function showPinResetSuccess(){
         S.pinResetStep=1;
         S.pinResetNew='';
+        cancelPinResetFingerprint();
         resetLogin();
         goTo('pin-reset-success');
         var secs=5;
