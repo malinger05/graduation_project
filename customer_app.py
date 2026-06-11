@@ -963,12 +963,13 @@ def card_setup_set_pin():
 
 @app.route("/reset-pin", methods=["POST"])
 def reset_pin():
-    card_number  = (request.form.get("card_number") or request.form.get("account") or "").strip()
-    new_pin      = (request.form.get("newPin") or "").strip()
-    confirm_pin  = (request.form.get("confirmPin") or "").strip()
+    card_number = (request.form.get("card_number") or "").strip().replace(" ", "")
+    account_ref = (request.form.get("account") or "").strip()
+    new_pin = (request.form.get("newPin") or "").strip()
+    confirm_pin = (request.form.get("confirmPin") or "").strip()
 
-    if not card_number or not new_pin or not confirm_pin:
-        return jsonify({"status": "error", "message": "Enter card number and PIN twice."}), 400
+    if not new_pin or not confirm_pin:
+        return jsonify({"status": "error", "message": "Enter and confirm your new PIN."}), 400
 
     pending = _get_pending_pin_reset()
     if not pending or not pending.get("fingerprintOk"):
@@ -977,9 +978,25 @@ def reset_pin():
             "message": "Verify your fingerprint before setting a new PIN.",
         }), 403
 
+    account_number = pending.get("accountNumber")
+    if not account_number and not card_number and not account_ref:
+        return jsonify({"status": "error", "message": "Session expired. Start PIN reset again."}), 400
+
+    if not account_number:
+        card_digits = (card_number or account_ref).replace(" ", "")
+        if re.match(r"^\d{16}$", card_digits):
+            card_number = card_digits
+        else:
+            account_number = account_ref or card_number
+
     try:
-        repo   = AccountsRepository(MIDDLEWARE_URL)
-        result = repo.reset_pin(card_number, new_pin, confirm_pin)
+        repo = AccountsRepository(MIDDLEWARE_URL)
+        result = repo.reset_pin(
+            new_pin,
+            confirm_pin,
+            card_number=card_number or None,
+            account_number=account_number,
+        )
     except RuntimeError as e:
         return jsonify({"status": "error", "message": str(e)}), 503
     except Exception as e:
@@ -988,7 +1005,7 @@ def reset_pin():
     if result.get("status") != "ok":
         return jsonify({
             "status":  "error",
-            "message": result.get("message", "Could not reset PIN."),
+            "message": result.get("message") or result.get("detail") or "Could not reset PIN.",
         }), 400
 
     _clear_pending_pin_reset()

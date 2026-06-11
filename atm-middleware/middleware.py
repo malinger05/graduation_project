@@ -532,6 +532,24 @@ def _fetch_account_fingerprint(account_number: str) -> int | None:
     return None
 
 
+def _resolve_account_to_card(account_number: str) -> str | None:
+    """Resolve account number to an active card number (service token)."""
+    if not SERVICE_TOKEN or not account_number:
+        return None
+    try:
+        resp = cb_http.get(
+            f"{CORE_BANKING_URL}/atm/resolve-account-card",
+            params={"accountNumber": account_number},
+            headers={"X-Service-Token": SERVICE_TOKEN},
+            timeout=(3, 8),
+        )
+        if resp.ok:
+            return resp.json().get("cardNumber")
+    except Exception:
+        pass
+    return None
+
+
 def _fetch_account_history(account_id: int, jwt: str) -> list[dict]:
     """Best-effort read of Core Banking history for fraud checks. Returns []
     on any error so a transient read failure never blocks a legitimate
@@ -575,7 +593,8 @@ class AdminUnlockRequest(BaseModel):
 
 
 class ResetPinRequest(BaseModel):
-    cardNumber: str
+    cardNumber: str | None = None
+    accountNumber: str | None = None
     newPin: str
     confirmPin: str
 
@@ -952,6 +971,7 @@ def atm_reset_pin(
     corr = correlation.new_correlation_id()
     req_audit = {
         "cardNumber": req.cardNumber,
+        "accountNumber": req.accountNumber,
         "newPin":     "***REDACTED***",
         "confirmPin": "***REDACTED***",
     }
@@ -976,10 +996,21 @@ def atm_reset_pin(
         )
         return body
 
-    # Resolve card → account number so we check/clear the lockout by accountNumber.
-    account_number = _resolve_card_to_account(req.cardNumber)
-    if account_number is None:
-        raise HTTPException(404, "Card not found.")
+    # Resolve account + card — accept cardNumber or accountNumber (PIN reset UI uses account).
+    card_number = (req.cardNumber or "").strip().replace(" ", "")
+    account_number = (req.accountNumber or "").strip()
+
+    if card_number:
+        resolved_account = _resolve_card_to_account(card_number)
+        if resolved_account is None:
+            raise HTTPException(404, "Card not found.")
+        account_number = resolved_account
+    elif account_number:
+        card_number = _resolve_account_to_card(account_number)
+        if card_number is None:
+            raise HTTPException(404, "No active card found for this account.")
+    else:
+        raise HTTPException(400, "Provide cardNumber or accountNumber.")
 
     if not lockouts.requires_pin_reset(account_number):
         raise HTTPException(

@@ -167,27 +167,42 @@ class MiddlewareClient:
             return None
         return result.get("account")
 
-    def reset_pin(self, card_number: str, new_pin: str, confirm_pin: str) -> dict:
+    def reset_pin(
+        self,
+        new_pin: str,
+        confirm_pin: str,
+        *,
+        card_number: str | None = None,
+        account_number: str | None = None,
+    ) -> dict:
         """POST /atm/reset-pin — customer sets new PIN after admin unlock."""
+        payload: dict = {"newPin": new_pin, "confirmPin": confirm_pin}
+        if card_number:
+            payload["cardNumber"] = card_number.replace(" ", "")
+        if account_number:
+            payload["accountNumber"] = account_number.strip()
+        if not payload.get("cardNumber") and not payload.get("accountNumber"):
+            return {"status": "error", "message": "Card or account number is required."}
+
         try:
             resp = mw_http.post(
                 f"{self.base_url}/atm/reset-pin",
-                json={
-                    "cardNumber": card_number,   # middleware expects cardNumber
-                    "newPin":     new_pin,
-                    "confirmPin": confirm_pin,
-                },
+                json=payload,
                 headers={"X-Channel": "ATM_WEB"},
                 timeout=60,
             )
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError, RuntimeError) as e:
             raise _mw_unreachable(e) from e
         try:
-            return resp.json()
+            body = resp.json()
         except ValueError:
             raise RuntimeError(
                 f"Middleware returned non-JSON (HTTP {resp.status_code}): {resp.text[:200]}"
             )
+        if resp.status_code >= 400 and body.get("status") != "error":
+            detail = body.get("detail") or body.get("error") or resp.text
+            return {"status": "error", "message": detail}
+        return body
 
     # ── Balance ───────────────────────────────────────────────────────────────
 
@@ -334,8 +349,20 @@ class AccountsRepository:
     def authenticate(self, card_number: str, pin: str):
         return self._client.authenticate(card_number, pin)
 
-    def reset_pin(self, card_number: str, new_pin: str, confirm_pin: str) -> dict:
-        return self._client.reset_pin(card_number, new_pin, confirm_pin)
+    def reset_pin(
+        self,
+        new_pin: str,
+        confirm_pin: str,
+        *,
+        card_number: str | None = None,
+        account_number: str | None = None,
+    ) -> dict:
+        return self._client.reset_pin(
+            new_pin,
+            confirm_pin,
+            card_number=card_number,
+            account_number=account_number,
+        )
 
     def get_balance(self, account_id: str) -> float:
         return self._client.get_balance()
