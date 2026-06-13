@@ -114,13 +114,26 @@ nano .env
 
 ### Senaryo A (sadece kiosk UI) — backend uzaktaysa
 
+**Laptop'ta** `scripts/run_demo.sh` çalışırken:
+
+```bash
+./scripts/print_pi_kiosk_env.sh
+```
+
+Çıktıdaki satırları **Pi'deki** `.env` dosyasına kopyalayın.
+
 ```env
-MIDDLEWARE_URL=https://<SUNUCU_IP>:8443   # veya mw.local (hosts ile)
-FINGERPRINT_PORT=/dev/ttyUSB0             # ls /dev/ttyUSB* ile kontrol
+MIDDLEWARE_URL=http://<LAPTOP_IP>:8000   # Pi'nin IP'si DEĞİL — laptop'un IP'si!
+MTLS_DISABLE=1
+FINGERPRINT_PORT=/dev/ttyUSB0
 FINGERPRINT_BAUD=9600
-BIND_HOST=127.0.0.1
+BIND_HOST=0.0.0.0
 PORT=5001
 ```
+
+Şablon: `.env.kiosk-remote.example`
+
+**Sık hata:** Pi `.env` içinde `MIDDLEWARE_URL=http://10.42.0.1:8000` yazıyorsa ve bu IP **Pi'nin kendi** Tailscale adresiyse, middleware'e ulaşamazsınız — aynı ağda **laptop'un** IP'sini kullanın.
 
 Sensör yoksa (test):
 

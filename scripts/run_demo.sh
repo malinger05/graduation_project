@@ -277,6 +277,9 @@ else
   echo "  Middleware: http://127.0.0.1:8000"
   echo "  Core Bank:  http://127.0.0.1:8080"
 fi
+echo
+hdr "Raspberry Pi kiosk (.env on the Pi — use LAPTOP IP, not Pi IP)"
+"$SCRIPT_DIR/print_pi_kiosk_env.sh" || warn "Could not detect LAN IP for Pi .env"
 echo "  Logs:       $LOG_DIR/*.log"
 echo
 echo "Press Ctrl-C to stop the app processes (Postgres containers stay up)."

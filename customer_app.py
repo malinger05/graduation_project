@@ -1222,4 +1222,14 @@ if __name__ == "__main__":
     # Localhost only — use Caddy https://atm.local in the browser (see scripts/caddy/).
     host = os.environ.get("BIND_HOST", "127.0.0.1")
     print(f"[customer_app] http://{host}:{port}  (browser: https://atm.local via Caddy)")
+    print(f"[customer_app] middleware target: {MIDDLEWARE_URL}")
+    try:
+        health = mw_http.get(f"{MIDDLEWARE_URL}/health", timeout=(2, 3))
+        if health.ok:
+            print("[customer_app] middleware reachable")
+        else:
+            print(f"[customer_app] WARNING: middleware returned HTTP {health.status_code}")
+    except Exception as exc:
+        print(f"[customer_app] WARNING: cannot reach middleware — {exc}")
+        print("[customer_app] On Pi: set MIDDLEWARE_URL to the LAPTOP IP (run scripts/print_pi_kiosk_env.sh on laptop)")
     app.run(host=host, port=port, debug=False)

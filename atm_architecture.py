@@ -33,10 +33,21 @@ def _mw_unreachable(exc: Exception) -> RuntimeError:
             "Ensure Caddy mw.local has client_auth (scripts/caddy/Caddyfile.example)\n"
             "Then: cd ~/atm-tls && sudo caddy run --config Caddyfile"
         )
+    remote_hint = ""
+    if MIDDLEWARE_URL.startswith("http://") and "127.0.0.1" not in MIDDLEWARE_URL:
+        remote_hint = (
+            "\nRemote kiosk (Pi) checklist:\n"
+            "  • MIDDLEWARE_URL must be the LAPTOP/server IP — not the Pi's IP.\n"
+            "  • On laptop: scripts/run_demo.sh must be running (middleware :8000).\n"
+            "  • On laptop run: scripts/print_pi_kiosk_env.sh → copy to Pi .env\n"
+            "  • Pi .env needs MTLS_DISABLE=1 when using http:// (not https://mw.local).\n"
+            "  • Allow inbound TCP 8000 on the laptop firewall if needed.\n"
+        )
     return RuntimeError(
         f"Cannot reach middleware at {MIDDLEWARE_URL}.\n"
-        "Start it: cd atm-middleware && python3 middleware.py\n"
-        "And Caddy: cd ~/atm-tls && sudo caddy run --config Caddyfile"
+        "Start it on the server: cd atm-middleware && python3 middleware.py\n"
+        "Or full stack: scripts/run_demo.sh\n"
+        f"{remote_hint}"
     )
 
 
